@@ -80,6 +80,106 @@ cmd_alias_definitions = {
         'plugin': 'ctrl',
         'method': 'flush_coverart_cache'},
 
+    # SPOTIFY PLAYER
+    'play_spotify_content': {
+        'title': 'Play Spotify content (playlist/album/track/artist)',
+        'note': 'Use this for RFID cards with Spotify URIs. Requires Spotify Premium account.',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'play_content'},
+    'play_spotify_card': {
+        'title': 'Play Spotify content triggered by card swipe',
+        'note': 'Like play_spotify_content but with second swipe detection',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'play_card'},
+    'spotify_toggle': {
+        'title': 'Toggle Spotify playback (play/pause)',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'toggle',
+        'ignore_card_removal_action': True},
+    'spotify_next': {
+        'title': 'Skip to next Spotify track',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'next',
+        'ignore_card_removal_action': True},
+    'spotify_prev': {
+        'title': 'Skip to previous Spotify track',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'prev',
+        'ignore_card_removal_action': True},
+    'spotify_shuffle': {
+        'title': 'Toggle Spotify shuffle mode',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'shuffle',
+        'ignore_card_removal_action': True},
+    'spotify_repeat': {
+        'title': 'Toggle Spotify repeat mode',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'repeat',
+        'ignore_card_removal_action': True},
+
+    # PODCAST PLAYER
+    'play_podcast_series': {
+        'title': 'Play entire podcast series (newest to oldest)',
+        'note': 'Plays all unplayed episodes, auto-resumes from last position, auto-resets when all completed',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'play_podcast_series'},
+    'play_podcast_episode': {
+        'title': 'Play specific podcast episode',
+        'note': 'Plays single episode with resume capability',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'play_podcast_episode'},
+    'play_podcast_card': {
+        'title': 'Play podcast triggered by card swipe',
+        'note': 'Like play_podcast_series but with second swipe detection',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'play_card'},
+    'search_podcasts': {
+        'title': 'Search for podcasts via iTunes API',
+        'note': 'Returns list of podcast search results',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'search_podcasts'},
+    'get_podcast_episodes': {
+        'title': 'Get episodes from podcast feed',
+        'note': 'Returns list of episodes from RSS feed',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'get_episodes'},
+    'refresh_podcast_feed': {
+        'title': 'Force refresh podcast feed',
+        'note': 'Bypasses cache and fetches fresh feed data',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'refresh_feed'},
+    'podcast_toggle': {
+        'title': 'Toggle podcast playback (play/pause)',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'pause',
+        'ignore_card_removal_action': True},
+    'podcast_next': {
+        'title': 'Skip to next podcast episode',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'next',
+        'ignore_card_removal_action': True},
+    'podcast_prev': {
+        'title': 'Skip to previous podcast episode',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'prev',
+        'ignore_card_removal_action': True},
+
     # VOLUME
     'set_volume': {
         'package': 'volume',
