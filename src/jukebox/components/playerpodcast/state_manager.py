@@ -51,7 +51,7 @@ class PodcastStateManager:
 
     def _save(self):
         """Save state to disk"""
-        self.nvm.save(self.state, self.status_file)
+        self.nvm.save_all()
 
     def add_podcast(self, podcast_id: str, feed_url: str, title: str):
         """
