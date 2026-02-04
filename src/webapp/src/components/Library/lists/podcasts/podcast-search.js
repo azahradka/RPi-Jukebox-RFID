@@ -39,7 +39,7 @@ const PodcastSearch = ({ isSelecting, onSelectPodcast }) => {
     setSearchPerformed(true);
 
     try {
-      const { result, error: searchError } = await request('searchPodcasts', [query.trim()]);
+      const { result, error: searchError } = await request('searchPodcasts', { query: query.trim() });
 
       if (searchError) {
         setError(searchError);

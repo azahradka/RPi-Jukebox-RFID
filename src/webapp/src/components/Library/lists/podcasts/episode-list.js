@@ -31,7 +31,7 @@ const EpisodeList = ({ feedUrl, isSelecting, onSelectEpisode, podcastTitle }) =>
     setError(null);
 
     try {
-      const { result, error: fetchError } = await request('getPodcastEpisodes', [feedUrl, forceRefresh]);
+      const { result, error: fetchError } = await request('getPodcastEpisodes', { feed_url: feedUrl, force_refresh: forceRefresh });
 
       if (fetchError) {
         setError(fetchError);
