@@ -12,6 +12,7 @@ modules:
     jingle.alsawave: jingle.alsawave
     jingle.jinglemp3: jingle.jinglemp3
     player: playermpd
+    player_spotify: playerspotify
     cards: rfid.cards
     rfid: rfid.reader
     timers: timers
@@ -93,6 +94,33 @@ playermpd:
   stopped_prev_action: prev
   # Must be one of: 'none', 'next', 'rewind':
   stopped_next_action: next
+playerspotify:
+  # Spotify Player Plugin Configuration
+  # Requires Spotify Premium account for playback API
+  # Get credentials from: https://developer.spotify.com/dashboard
+  client_id: ''
+  client_secret: ''
+  redirect_uri: 'http://phoniebox.local:8888/callback'
+  credential_file: ../../shared/settings/spotify_credentials.json
+  status_file: ../../shared/settings/spotify_player_status.json
+  # Device name must match librespot configuration
+  device_name: 'Phoniebox'
+  # Second swipe action when same card is swiped again
+  second_swipe_action:
+    # Must be one of: 'toggle', 'play', 'skip', 'rewind', 'replay', 'none'
+    alias: toggle
+  # Fallback action when Spotify is unavailable (optional)
+  # fallback_action:
+  #   enabled: true
+  #   package: playermpd
+  #   plugin: ctrl
+  #   method: play_card
+  #   args: ['fallback/folder']
+  # Maximum number of tracks to fetch for artist URIs
+  artist_track_limit: 20
+  # Content caching configuration
+  cache_enabled: true
+  cache_path: ../../shared/cache/spotify/
 rpc:
   tcp_port: 5555
   websocket_port: 5556

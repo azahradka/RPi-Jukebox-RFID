@@ -1,0 +1,92 @@
+# Librespot Systemd Service for Phoniebox Spotify Integration
+#
+# This is a user-level systemd service file for the librespot Spotify Connect daemon.
+# Librespot allows the Phoniebox to appear as a Spotify Connect device.
+#
+# Installation:
+# 1. Copy this file to ~/.config/systemd/user/librespot.service
+# 2. Reload systemd: systemctl --user daemon-reload
+# 3. Enable service: systemctl --user enable librespot.service
+# 4. Start service: systemctl --user start librespot.service
+# 5. Check status: systemctl --user status librespot.service
+#
+# Requirements:
+# - librespot binary installed in /usr/local/bin/librespot
+# - PulseAudio running
+# - Spotify Premium account
+#
+# Configuration:
+# - Device name: Change --name parameter to customize how device appears in Spotify
+# - Audio backend: pulseaudio (default), alsa, or pipe
+# - Bitrate: 96, 160 (recommended for RPi Zero 2 W), or 320 kbps
+# - Cache: Stores credentials and temporary audio data
+#
+# Performance Notes for RPi Zero 2 W:
+# - 160 kbps bitrate balances quality and resource usage
+# - Volume normalization reduces loud peaks
+# - Cache improves responsiveness but uses disk space
+#
+# Logs:
+# View logs with: journalctl --user -u librespot.service -f
+
+[Unit]
+Description=Librespot Spotify Connect Daemon
+Documentation=https://github.com/librespot-org/librespot
+After=network-online.target sound.target pulseaudio.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Path to librespot binary (adjust if installed elsewhere)
+ExecStart=/usr/local/bin/librespot \
+  --name "Phoniebox" \
+  --backend pulseaudio \
+  --device-type speaker \
+  --bitrate 160 \
+  --cache /home/boxadmin/.cache/librespot \
+  --enable-volume-normalisation \
+  --initial-volume 70 \
+  --volume-ctrl linear
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Resource limits (important for RPi Zero 2 W)
+MemoryMax=100M
+CPUQuota=50%
+
+# Security hardening (optional but recommended)
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=librespot
+
+[Install]
+WantedBy=default.target
+
+# Configuration Options Reference:
+#
+# --name <NAME>                Device name shown in Spotify (required)
+# --backend <BACKEND>          Audio backend: pulseaudio, alsa, pipe
+# --device-type <TYPE>         Device type: speaker, computer, tv, etc.
+# --bitrate <RATE>             Audio quality: 96, 160, 320 kbps
+# --cache <PATH>               Cache directory for credentials and audio
+# --enable-volume-normalisation Reduce volume variations between tracks
+# --initial-volume <VOL>       Starting volume (0-100)
+# --volume-ctrl <CTRL>         Volume control: log, linear, fixed
+# --mixer <MIXER>              Software mixer to use
+# --device <DEVICE>            ALSA device name (for alsa backend)
+# --enable-audio-cache         Cache audio files for faster playback
+# --disable-credential-cache   Don't cache credentials (less secure)
+#
+# For ALSA backend on RPi:
+# --backend alsa --device hw:0,0
+#
+# For more options:
+# librespot --help

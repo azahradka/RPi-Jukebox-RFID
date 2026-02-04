@@ -1,0 +1,249 @@
+# Example RFID Card Configuration for Spotify Integration
+#
+# This file demonstrates how to configure RFID cards to trigger Spotify content.
+# Copy relevant entries to your shared/settings/cards.yaml file.
+#
+# How to get Spotify URIs:
+# 1. Right-click content in Spotify app
+# 2. Select "Share" → "Copy Spotify URI"
+# 3. Paste into this file
+#
+# Supported content types:
+# - spotify:track:ID      - Single track
+# - spotify:playlist:ID   - Playlist (all tracks)
+# - spotify:album:ID      - Album (all tracks)
+# - spotify:artist:ID     - Artist's top 20 tracks
+#
+# You can also use URL format:
+# - https://open.spotify.com/track/ID → converts to spotify:track:ID
+
+# ============================================================================
+# Spotify Playlists
+# ============================================================================
+
+# Today's Top Hits (Spotify's popular playlist)
+'1234567890':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DXcBWIGoYBM5M']
+
+# Your personal playlist (replace with your own playlist URI)
+'0987654321':
+  package: playerspotify
+  plugin: ctrl
+  method: play_content
+  args: ['spotify:playlist:YOUR_PLAYLIST_ID_HERE']
+
+# Chill Vibes playlist
+'1111111111':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZEVXbMDoHDwVN2tF']
+
+# ============================================================================
+# Spotify Albums
+# ============================================================================
+
+# Abbey Road - The Beatles
+'2222222222':
+  alias: play_spotify_content
+  args: ['spotify:album:0ETFjACtuP2ADo6LFhL6HN']
+
+# Thriller - Michael Jackson
+'3333333333':
+  alias: play_spotify_content
+  args: ['spotify:album:2ANVost0y2y52ema1E9xAZ']
+
+# ============================================================================
+# Single Tracks
+# ============================================================================
+
+# Bohemian Rhapsody - Queen
+'4444444444':
+  alias: play_spotify_content
+  args: ['spotify:track:4u7EnebtmKWzUH433cf5Qv']
+
+# Shape of You - Ed Sheeran
+'5555555555':
+  alias: play_spotify_content
+  args: ['spotify:track:7qiZfU4dY1lWllzX7mPBI']
+
+# ============================================================================
+# Artists (plays top 20 tracks)
+# ============================================================================
+
+# The Beatles
+'6666666666':
+  alias: play_spotify_content
+  args: ['spotify:artist:3WrFJ7ztbogyGnTHbHJFl2']
+
+# Taylor Swift
+'7777777777':
+  alias: play_spotify_content
+  args: ['spotify:artist:06HL4z0CvFAxyc27GXpf02']
+
+# ============================================================================
+# Control Cards (work with active player)
+# ============================================================================
+
+# Toggle play/pause
+'8888888888':
+  alias: spotify_toggle
+
+# Next track
+'9999999999':
+  alias: spotify_next
+
+# Previous track
+'1010101010':
+  alias: spotify_prev
+
+# Toggle shuffle
+'1111222222':
+  alias: spotify_shuffle
+
+# Toggle repeat
+'2222333333':
+  alias: spotify_repeat
+
+# ============================================================================
+# Mixed MPD and Spotify Cards
+# ============================================================================
+
+# MPD: Local children's music
+'3333444444':
+  alias: play_card
+  args: ['Children/Disney']
+
+# Spotify: Kids playlist
+'4444555555':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DXamfkIHNXKvN']
+
+# MPD: Rock collection
+'5555666666':
+  alias: play_card
+  args: ['Rock/ClassicRock']
+
+# Spotify: Rock Classics playlist
+'6666777777':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DWXRqgorJj26U']
+
+# ============================================================================
+# Advanced: Using Full RPC Syntax
+# ============================================================================
+
+# Spotify playlist with custom configuration
+'7777888888':
+  package: playerspotify
+  plugin: ctrl
+  method: play_card  # Uses second swipe detection
+  args: ['spotify:playlist:37i9dQZF1DXcBWIGoYBM5M']
+
+# MPD with specific settings
+'8888999999':
+  package: playermpd
+  plugin: ctrl
+  method: play_folder
+  args: ['Jazz', true]  # Recursive
+
+# ============================================================================
+# URL Format Examples (alternative to URI format)
+# ============================================================================
+
+# These URLs are automatically converted to Spotify URIs
+'9999000000':
+  alias: play_spotify_content
+  args: ['https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M']
+
+'0000111111':
+  alias: play_spotify_content
+  args: ['https://open.spotify.com/album/0ETFjACtuP2ADo6LFhL6HN']
+
+# ============================================================================
+# Tips
+# ============================================================================
+
+# 1. Second Swipe Behavior:
+#    When you swipe the same Spotify card twice, the configured second_swipe_action
+#    is triggered (default: toggle). Configure in jukebox.yaml:
+#    playerspotify:
+#      second_swipe_action:
+#        alias: toggle  # Options: toggle, play, skip, rewind, replay, none
+
+# 2. Testing URIs:
+#    Before adding to cards.yaml, test URIs with the RPC tool:
+#    ./tools/run_rpc_tool.sh
+#    > play_spotify_content spotify:track:11dFghVXANMlKmJXsNCbNl
+
+# 3. Finding Spotify URIs:
+#    Desktop app: Right-click → Share → Copy Spotify URI
+#    Mobile app: Share → Copy Link (then convert URL to URI format)
+#    Web player: Copy URL from browser (then convert to URI format)
+
+# 4. Card Removal Actions:
+#    Add ignore_card_removal_action to prevent action on card removal:
+#    '1234567890':
+#      alias: play_spotify_content
+#      args: ['spotify:playlist:xxxxx']
+#      ignore_card_removal_action: true
+
+# 5. Fallback to MPD:
+#    Configure fallback in jukebox.yaml to switch to MPD if Spotify fails:
+#    playerspotify:
+#      fallback_action:
+#        enabled: true
+#        package: playermpd
+#        plugin: ctrl
+#        method: play_card
+#        args: ['Offline/Favorites']
+
+# 6. Coexistence:
+#    MPD and Spotify players run simultaneously. Swipe a card to activate
+#    the respective player. Control cards (toggle, next, prev) work with
+#    whichever player is currently active.
+
+# ============================================================================
+# Popular Spotify Playlists (as of 2026)
+# ============================================================================
+
+# Note: These are public Spotify playlists. IDs may change over time.
+
+# Today's Top Hits
+'playlist_top_hits':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DXcBWIGoYBM5M']
+
+# RapCaviar
+'playlist_rap':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DX0XUsuxWHRQd']
+
+# Rock Classics
+'playlist_rock':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DWXRqgorJj26U']
+
+# Peaceful Piano
+'playlist_piano':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DX4sWSpwq3LiO']
+
+# Chill Hits
+'playlist_chill':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DX4WYpdgoIcn6']
+
+# Workout
+'playlist_workout':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DX70RN3TfWWJh']
+
+# Sleep
+'playlist_sleep':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DWZd79rJ6a7lp']
+
+# Focus
+'playlist_focus':
+  alias: play_spotify_content
+  args: ['spotify:playlist:37i9dQZF1DX8NTLI2TtZa6']

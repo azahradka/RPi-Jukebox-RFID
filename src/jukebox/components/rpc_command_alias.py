@@ -80,6 +80,50 @@ cmd_alias_definitions = {
         'plugin': 'ctrl',
         'method': 'flush_coverart_cache'},
 
+    # SPOTIFY PLAYER
+    'play_spotify_content': {
+        'title': 'Play Spotify content (playlist/album/track/artist)',
+        'note': 'Use this for RFID cards with Spotify URIs. Requires Spotify Premium account.',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'play_content'},
+    'play_spotify_card': {
+        'title': 'Play Spotify content triggered by card swipe',
+        'note': 'Like play_spotify_content but with second swipe detection',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'play_card'},
+    'spotify_toggle': {
+        'title': 'Toggle Spotify playback (play/pause)',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'toggle',
+        'ignore_card_removal_action': True},
+    'spotify_next': {
+        'title': 'Skip to next Spotify track',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'next',
+        'ignore_card_removal_action': True},
+    'spotify_prev': {
+        'title': 'Skip to previous Spotify track',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'prev',
+        'ignore_card_removal_action': True},
+    'spotify_shuffle': {
+        'title': 'Toggle Spotify shuffle mode',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'shuffle',
+        'ignore_card_removal_action': True},
+    'spotify_repeat': {
+        'title': 'Toggle Spotify repeat mode',
+        'package': 'playerspotify',
+        'plugin': 'ctrl',
+        'method': 'repeat',
+        'ignore_card_removal_action': True},
+
     # VOLUME
     'set_volume': {
         'package': 'volume',
