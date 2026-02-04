@@ -8,6 +8,7 @@ import {
 
 import SelectCommandAliases from './select-command-aliases';
 import SelectPlayMusic from './actions/play-music';
+import SelectPlayPodcast from './actions/play-podcast';
 import SelectTimers from './actions/timers';
 import SelectAudio from './actions/audio';
 import { buildActionData } from '../utils';
@@ -63,6 +64,13 @@ const ControlsSelector = ({
 
         {actionData.action === 'play_music' &&
           <SelectPlayMusic
+            actionData={actionData}
+            cardId={cardId}
+          />
+        }
+
+        {actionData.action === 'play_podcast' &&
+          <SelectPlayPodcast
             actionData={actionData}
             cardId={cardId}
           />

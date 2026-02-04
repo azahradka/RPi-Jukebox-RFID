@@ -10,12 +10,16 @@ import {
   Grid,
   IconButton,
   Stack,
-  Switch,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 
 import SearchIcon from '@mui/icons-material/Search';
+import AlbumIcon from '@mui/icons-material/Album';
+import FolderIcon from '@mui/icons-material/Folder';
+import PodcastsIcon from '@mui/icons-material/Podcasts';
 
 const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
   const { search: urlSearch } = useLocation();
@@ -24,19 +28,25 @@ const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
   const { t } = useTranslation();
   const [showSearchInput, setShowSearchInput] = useState(false);
 
-  const getCurrentView = () => (
-    view.startsWith('folders') ? 'folders' : 'albums'
-  );
+  const getCurrentView = () => {
+    if (view.startsWith('podcasts')) return 'podcasts';
+    if (view.startsWith('folders')) return 'folders';
+    return 'albums';
+  };
 
-  const toggleView = () => {
-    const path = view.startsWith('folders') ? 'albums' : 'folders';
-    localStorage.setItem('libraryLastListView', path);
-    navigate(`${path}${urlSearch}`);
+  const handleViewChange = (event, newView) => {
+    if (newView && newView !== getCurrentView()) {
+      localStorage.setItem('libraryLastListView', newView);
+      navigate(`${newView}${urlSearch}`);
+    }
   };
 
   const iconLabel = showSearchInput
     ? t('library.header.search-hide')
     : t('library.header.search-show');
+
+  const currentView = getCurrentView();
+  const isPodcastsView = currentView === 'podcasts';
 
   return (
     <Grid container sx={{ marginBottom: '8px' }}>
@@ -44,15 +54,20 @@ const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
         xs={12}
         sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', width: '100%' }}
       >
-        <IconButton
-          aria-label={iconLabel}
-          onClick={() => setShowSearchInput(!showSearchInput)}
-          color={showSearchInput ? 'primary' : undefined}
-          title={iconLabel}
-        >
-          <SearchIcon />
-        </IconButton>
-        {showSearchInput &&
+        {/* Search is only for music (albums/folders), not podcasts */}
+        {!isPodcastsView && (
+          <IconButton
+            aria-label={iconLabel}
+            onClick={() => setShowSearchInput(!showSearchInput)}
+            color={showSearchInput ? 'primary' : undefined}
+            title={iconLabel}
+          >
+            <SearchIcon />
+          </IconButton>
+        )}
+        {isPodcastsView && <div style={{ width: 40 }} />}
+
+        {showSearchInput && !isPodcastsView &&
           <TextField
             id="library-search"
             label={t('library.header.search-label')}
@@ -67,30 +82,38 @@ const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
             }}
           />
         }
-        {!showSearchInput &&
+        {(!showSearchInput || isPodcastsView) &&
           <Stack
             alignItems="center"
             direction="row"
-            sx={{ marginRight: '5px' }}
+            sx={{ marginRight: '5px', flexGrow: 1, justifyContent: 'center' }}
           >
-            <Typography
-              color={getCurrentView() === 'albums' && 'primary'}
-              sx={{ transition: 'color .25s' }}
+            <ToggleButtonGroup
+              value={currentView}
+              exclusive
+              onChange={handleViewChange}
+              aria-label={t('library.header.toggle-label')}
+              size="small"
             >
-              {t('library.header.albums')}
-            </Typography>
-            <Switch
-              checked={getCurrentView() === 'folders' ? true : false}
-              onChange={toggleView}
-              inputProps={{ 'aria-label': t('library.header.toggle-label') }}
-              color="default"
-            />
-            <Typography
-              color={getCurrentView() === 'folders' && 'primary'}
-              sx={{ transition: 'color .25s' }}
-            >
-              {t('library.header.folders')}
-            </Typography>
+              <ToggleButton value="albums" aria-label={t('library.header.albums')}>
+                <AlbumIcon sx={{ mr: 0.5, fontSize: '1.2rem' }} />
+                <Typography variant="body2">
+                  {t('library.header.albums')}
+                </Typography>
+              </ToggleButton>
+              <ToggleButton value="folders" aria-label={t('library.header.folders')}>
+                <FolderIcon sx={{ mr: 0.5, fontSize: '1.2rem' }} />
+                <Typography variant="body2">
+                  {t('library.header.folders')}
+                </Typography>
+              </ToggleButton>
+              <ToggleButton value="podcasts" aria-label={t('library.header.podcasts', 'Podcasts')}>
+                <PodcastsIcon sx={{ mr: 0.5, fontSize: '1.2rem' }} />
+                <Typography variant="body2">
+                  {t('library.header.podcasts', 'Podcasts')}
+                </Typography>
+              </ToggleButton>
+            </ToggleButtonGroup>
           </Stack>
         }
       </Grid>

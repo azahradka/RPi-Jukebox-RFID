@@ -76,6 +76,14 @@ const JUKEBOX_ACTIONS_MAP = {
       sync_rfidcards_change_on_rfid_scan: {},
     }
   },
+
+  // Podcasts
+  play_podcast: {
+    commands: {
+      play_podcast_series: {},
+      play_podcast_episode: {},
+    }
+  },
 }
 
 const TIMER_STEPS = [0, 2, 5, 10, 15, 20, 30, 45, 60, 120, 180, 240];

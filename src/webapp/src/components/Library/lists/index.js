@@ -15,6 +15,7 @@ import {
 import Albums from './albums';
 import SongList from './albums/song-list';
 import Folders from './folders';
+import Podcasts from './podcasts';
 import LibraryHeader from "../library-header";
 import SelectorHeader from "../selector-header";
 
@@ -89,6 +90,11 @@ const LibraryLists = () => {
                   registerMusicToCard={registerMusicToCard}
                 />
               }
+            />
+            <Route
+              path="podcasts"
+              element={<Podcasts />}
+              exact
             />
           </Routes>
         </Grid>
