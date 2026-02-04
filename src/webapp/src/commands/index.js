@@ -297,41 +297,41 @@ const commands = {
 
   // Podcasts
   searchPodcasts: {
-    _package: 'playerpodcast',
+    _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'search_podcasts',
     argKeys: ['query']
   },
   getPodcastEpisodes: {
-    _package: 'playerpodcast',
+    _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'get_episodes',
     argKeys: ['feed_url', 'force_refresh']
   },
   refreshPodcastFeed: {
-    _package: 'playerpodcast',
+    _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'refresh_feed',
     argKeys: ['feed_url']
   },
   podcastPlayerStatus: {
-    _package: 'playerpodcast',
+    _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'playerstatus'
   },
   getPodcastStats: {
-    _package: 'playerpodcast',
+    _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'get_stats'
   },
   play_podcast_series: {
-    _package: 'playerpodcast',
+    _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'play_podcast_series',
     argKeys: ['feed_url']
   },
   play_podcast_episode: {
-    _package: 'playerpodcast',
+    _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'play_podcast_episode',
     argKeys: ['feed_url', 'episode_guid']
