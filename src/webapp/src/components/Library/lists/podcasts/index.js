@@ -3,13 +3,17 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Box,
+  Button,
+  Paper,
   Tab,
   Tabs,
-  Paper,
+  Typography,
 } from '@mui/material';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 
 import PodcastSearch from './podcast-search';
 import EpisodeList from './episode-list';
+import { buildActionData } from '../../../Cards/utils';
 
 const Podcasts = () => {
   const { t } = useTranslation();
@@ -39,19 +43,30 @@ const Podcasts = () => {
   const handleSelectEpisode = (episode) => {
     if (isSelecting && selectedPodcast) {
       // Register specific episode to card
-      const actionData = {
-        action: 'play_podcast',
-        command: 'play_podcast_episode',
-        args: [selectedPodcast.feed_url, episode.guid],
-      };
+      const actionData = buildActionData(
+        'play_podcast',
+        'play_podcast_episode',
+        [selectedPodcast.feed_url, episode.guid]
+      );
 
       const state = {
         registerCard: {
           actionData,
           cardId,
+          podcastMetadata: {
+            title: selectedPodcast.title,
+            author: selectedPodcast.author,
+            image_url: selectedPodcast.image_url,
+            feed_url: selectedPodcast.feed_url,
+            episode: {
+              title: episode.title,
+              guid: episode.guid,
+            },
+          },
         },
       };
 
+      console.log('Navigating with episode actionData:', actionData);
       navigate('/cards/register', { state });
     } else {
       // Play episode now (future enhancement - would call RPC to play)
@@ -62,20 +77,32 @@ const Podcasts = () => {
   const handleSelectSeries = () => {
     if (isSelecting && selectedPodcast) {
       // Register entire series to card
-      const actionData = {
-        action: 'play_podcast',
-        command: 'play_podcast_series',
-        args: [selectedPodcast.feed_url],
-      };
+      const actionData = buildActionData(
+        'play_podcast',
+        'play_podcast_series',
+        [selectedPodcast.feed_url]
+      );
 
       const state = {
         registerCard: {
           actionData,
           cardId,
+          podcastMetadata: {
+            title: selectedPodcast.title,
+            author: selectedPodcast.author,
+            image_url: selectedPodcast.image_url,
+            description: selectedPodcast.description,
+            feed_url: selectedPodcast.feed_url,
+          },
         },
       };
 
+      console.log('Navigating to /cards/register with state:', state);
+      console.log('Selected podcast:', selectedPodcast);
+      console.log('Built actionData:', actionData);
       navigate('/cards/register', { state });
+    } else {
+      console.log('Cannot select series:', { isSelecting, selectedPodcast });
     }
   };
 
@@ -167,9 +194,5 @@ const Podcasts = () => {
     </Box>
   );
 };
-
-// Import ArrowBackIcon
-import ArrowBackIcon from '@mui/icons-material/ArrowBack';
-import { Button, Typography } from '@mui/material';
 
 export default Podcasts;

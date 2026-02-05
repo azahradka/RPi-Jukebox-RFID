@@ -212,6 +212,34 @@ class PlayerPodcast:
             return []
 
     @plugs.tag
+    def get_podcast_info(self, feed_url: str) -> Dict[str, Any]:
+        """
+        Get podcast metadata from feed URL
+
+        Args:
+            feed_url: RSS feed URL
+
+        Returns:
+            Podcast metadata dict with title, author, image_url, description
+        """
+        try:
+            logger.info(f"Getting podcast info for: {feed_url}")
+            feed_data = self.feed_manager.fetch_feed(feed_url, force_refresh=False)
+            if feed_data:
+                # Return just the metadata, not the episodes
+                return {
+                    'title': feed_data.get('title', 'Unknown Podcast'),
+                    'author': feed_data.get('author', ''),
+                    'image_url': feed_data.get('image_url', ''),
+                    'description': feed_data.get('description', ''),
+                    'feed_url': feed_url,
+                }
+            return {}
+        except Exception as e:
+            logger.error(f"Get podcast info failed: {e}")
+            return {}
+
+    @plugs.tag
     def refresh_feed(self, feed_url: str) -> bool:
         """
         Force refresh of podcast feed

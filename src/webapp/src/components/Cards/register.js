@@ -12,11 +12,15 @@ const CardsRegister = () => {
     state: { 'rfid.card_id': swipedCardId },
     setState
   } = useContext(PubSubContext);
-  const { state: locationState } = useLocation();
-  const { registerCard } = locationState || {};
+  const location = useLocation();
+  const locationState = location.state;
+  const registerCard = locationState?.registerCard;
+
+  console.log('CardsRegister render - locationState:', locationState);
+  console.log('CardsRegister render - registerCard:', registerCard);
 
   const [cardId, setCardId] = useState(undefined);
-  const [actionData, setActionData] = useState(registerCard?.actionData || {});
+  const [actionData, setActionData] = useState({});
 
   useEffect(() => {
     setState(state => (omit(['rfid.card_id'], state)));
@@ -26,12 +30,23 @@ const CardsRegister = () => {
     setCardId(swipedCardId || registerCard?.cardId);
   }, [registerCard, swipedCardId])
 
+  useEffect(() => {
+    console.log('useEffect triggered - locationState:', locationState);
+    if (locationState?.registerCard?.actionData) {
+      console.log('Setting actionData:', locationState.registerCard.actionData);
+      setActionData(locationState.registerCard.actionData);
+    } else {
+      console.log('No actionData in locationState');
+    }
+  }, [locationState]);
+
   return (
     <CardsForm
       title={t('cards.register.register-card')}
       cardId={cardId}
       actionData={actionData}
       setActionData={setActionData}
+      podcastMetadata={registerCard?.podcastMetadata}
     />
   );
 };

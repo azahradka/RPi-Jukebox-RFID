@@ -155,6 +155,12 @@ cmd_alias_definitions = {
         'package': 'playerpodcast',
         'plugin': 'ctrl',
         'method': 'get_episodes'},
+    'get_podcast_info': {
+        'title': 'Get podcast metadata',
+        'note': 'Returns podcast title, author, image, description from feed',
+        'package': 'playerpodcast',
+        'plugin': 'ctrl',
+        'method': 'get_podcast_info'},
     'refresh_podcast_feed': {
         'title': 'Force refresh podcast feed',
         'note': 'Bypasses cache and fetches fresh feed data',

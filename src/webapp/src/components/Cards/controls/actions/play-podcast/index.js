@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   createSearchParams,
@@ -6,6 +6,8 @@ import {
 } from 'react-router-dom';
 import {
   Button,
+  CardMedia,
+  CircularProgress,
   Grid,
   Typography,
   Paper,
@@ -15,16 +17,44 @@ import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import PodcastsIcon from '@mui/icons-material/Podcasts';
 
 import { getActionAndCommand, getArgsValues } from '../../../utils';
+import request from '../../../../../utils/request';
 
 const SelectPlayPodcast = ({
   actionData,
   cardId,
+  podcastMetadata,
 }) => {
   const { t } = useTranslation();
   const navigate = useNavigate();
 
   const { command } = getActionAndCommand(actionData);
   const values = getArgsValues(actionData);
+
+  const [fetchedMetadata, setFetchedMetadata] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Fetch podcast metadata if we have a feed_url but no metadata
+  useEffect(() => {
+    const feedUrl = values && values[0];
+
+    if (feedUrl && !podcastMetadata && !fetchedMetadata && !isLoading) {
+      setIsLoading(true);
+
+      // Fetch podcast metadata from the RSS feed
+      request('getPodcastInfo', { feed_url: feedUrl })
+        .then(({ result, error }) => {
+          if (result && result.title) {
+            setFetchedMetadata(result);
+          }
+          setIsLoading(false);
+        })
+        .catch(() => {
+          setIsLoading(false);
+        });
+    }
+  }, [values, podcastMetadata, fetchedMetadata, isLoading]);
+
+  const metadata = podcastMetadata || fetchedMetadata;
 
   const selectPodcast = () => {
     const searchParams = createSearchParams({
@@ -48,7 +78,15 @@ const SelectPlayPodcast = ({
   };
 
   const renderSelectedContent = () => {
-    if (!values || values.length === 0) {
+    if (isLoading) {
+      return (
+        <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+          <CircularProgress size={24} />
+        </Box>
+      );
+    }
+
+    if (!metadata) {
       return (
         <Typography variant="body2" color="text.secondary">
           {t('cards.controls.actions.play-podcast.not-selected', 'No podcast selected yet')}
@@ -56,49 +94,57 @@ const SelectPlayPodcast = ({
       );
     }
 
-    if (command === 'play_podcast_series' && values[0]) {
-      return (
-        <Paper variant="outlined" sx={{ p: 2, mt: 1 }}>
-          <Typography variant="body2" color="text.secondary" gutterBottom>
-            {t('cards.controls.actions.play-podcast.feed-url', 'Feed URL')}:
-          </Typography>
-          <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
-            {values[0]}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-            {t('cards.controls.actions.play-podcast.series-hint', 'Will play all unplayed episodes, newest first')}
-          </Typography>
-        </Paper>
-      );
-    }
-
-    if (command === 'play_podcast_episode' && values[0]) {
-      return (
-        <Paper variant="outlined" sx={{ p: 2, mt: 1 }}>
-          <Typography variant="body2" color="text.secondary" gutterBottom>
-            {t('cards.controls.actions.play-podcast.feed-url', 'Feed URL')}:
-          </Typography>
-          <Typography variant="body2" sx={{ wordBreak: 'break-all', mb: 1 }}>
-            {values[0]}
-          </Typography>
-          {values[1] && (
-            <>
-              <Typography variant="body2" color="text.secondary" gutterBottom>
-                {t('cards.controls.actions.play-podcast.episode-guid', 'Episode ID')}:
-              </Typography>
-              <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
-                {values[1]}
-              </Typography>
-            </>
+    return (
+      <Paper variant="outlined" sx={{ p: 2, mt: 1 }}>
+        <Box sx={{ display: 'flex', gap: 2 }}>
+          {metadata.image_url && (
+            <CardMedia
+              component="img"
+              sx={{ width: 120, height: 120, borderRadius: 1, flexShrink: 0 }}
+              image={metadata.image_url}
+              alt={metadata.title}
+            />
           )}
-          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-            {t('cards.controls.actions.play-podcast.episode-hint', 'Will play this specific episode with resume')}
-          </Typography>
-        </Paper>
-      );
-    }
-
-    return null;
+          <Box sx={{ flex: 1 }}>
+            <Typography variant="h6" gutterBottom>
+              {metadata.title}
+            </Typography>
+            {metadata.author && (
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                {metadata.author}
+              </Typography>
+            )}
+            {metadata.description && (
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{
+                  mt: 1,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  display: '-webkit-box',
+                  WebkitLineClamp: 3,
+                  WebkitBoxOrient: 'vertical',
+                }}
+              >
+                {metadata.description}
+              </Typography>
+            )}
+            {metadata.episode && (
+              <Typography variant="body2" color="primary" sx={{ mt: 1, fontWeight: 500 }}>
+                Episode: {metadata.episode.title}
+              </Typography>
+            )}
+          </Box>
+        </Box>
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block' }}>
+          {command === 'play_podcast_series'
+            ? t('cards.controls.actions.play-podcast.series-hint', 'Will play all unplayed episodes, newest first')
+            : t('cards.controls.actions.play-podcast.episode-hint', 'Will play this specific episode with resume')
+          }
+        </Typography>
+      </Paper>
+    );
   };
 
   return (

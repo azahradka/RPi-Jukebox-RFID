@@ -19,6 +19,7 @@ const ControlsSelector = ({
   actionData,
   setActionData,
   cardId,
+  podcastMetadata,
 }) => {
   const { t } = useTranslation();
 
@@ -73,6 +74,7 @@ const ControlsSelector = ({
           <SelectPlayPodcast
             actionData={actionData}
             cardId={cardId}
+            podcastMetadata={podcastMetadata}
           />
         }
 

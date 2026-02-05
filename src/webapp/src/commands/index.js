@@ -308,6 +308,12 @@ const commands = {
     method: 'get_episodes',
     argKeys: ['feed_url', 'force_refresh']
   },
+  getPodcastInfo: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'get_podcast_info',
+    argKeys: ['feed_url']
+  },
   refreshPodcastFeed: {
     _package: 'player_podcast',
     plugin: 'ctrl',
