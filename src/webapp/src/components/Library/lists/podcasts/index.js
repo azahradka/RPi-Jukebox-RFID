@@ -14,6 +14,7 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import PodcastSearch from './podcast-search';
 import EpisodeList from './episode-list';
 import { buildActionData } from '../../../Cards/utils';
+import request from '../../../../utils/request';
 
 const Podcasts = () => {
   const { t } = useTranslation();
@@ -40,7 +41,7 @@ const Podcasts = () => {
     }
   };
 
-  const handleSelectEpisode = (episode) => {
+  const handleSelectEpisode = async (episode) => {
     if (isSelecting && selectedPodcast) {
       // Register specific episode to card
       const actionData = buildActionData(
@@ -69,8 +70,16 @@ const Podcasts = () => {
       console.log('Navigating with episode actionData:', actionData);
       navigate('/cards/register', { state });
     } else {
-      // Play episode now (future enhancement - would call RPC to play)
+      // Play episode now
       console.log('Play episode:', episode);
+      try {
+        await request('play_podcast_episode', {
+          feed_url: selectedPodcast.feed_url,
+          episode_guid: episode.guid
+        });
+      } catch (error) {
+        console.error('Failed to play episode:', error);
+      }
     }
   };
 
