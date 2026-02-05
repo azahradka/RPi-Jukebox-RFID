@@ -90,6 +90,8 @@ class PlayerPodcast:
         self.current_episode_guid = None
         self.current_feed_url = None
         self.playback_active = False
+        self.current_episode_metadata = None
+        self.current_podcast_metadata = None
 
         # Second swipe action configuration
         second_swipe_option = cfg.getn('playerpodcast', 'second_swipe_action', 'alias',
@@ -122,7 +124,7 @@ class PlayerPodcast:
             try:
                 if self.playback_active and self.current_episode_guid:
                     # Get current position from MPD
-                    mpd_status = plugs.call('playermpd', 'ctrl', 'playerstatus')
+                    mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
                     if mpd_status and mpd_status.get('state') == 'play':
                         elapsed = float(mpd_status.get('elapsed', 0))
                         duration = float(mpd_status.get('duration', 0))
@@ -144,7 +146,7 @@ class PlayerPodcast:
         while not self.status_thread_stop.is_set():
             try:
                 status = self.playerstatus()
-                publishing.get_publisher().send('podcast_playerstatus', status)
+                publishing.get_publisher().send('playerstatus', status)
             except Exception as e:
                 logger.debug(f"Status publishing error: {e}")
             time.sleep(1)
@@ -152,7 +154,7 @@ class PlayerPodcast:
     def _toggle_playback(self):
         """Toggle MPD playback state"""
         try:
-            plugs.call('playermpd', 'ctrl', 'toggle')
+            plugs.call('player', 'ctrl', 'toggle')
             logger.info("Toggled podcast playback")
         except Exception as e:
             logger.error(f"Toggle failed: {e}")
@@ -160,7 +162,7 @@ class PlayerPodcast:
     def _next_episode(self):
         """Skip to next episode"""
         try:
-            plugs.call('playermpd', 'ctrl', 'next')
+            plugs.call('player', 'ctrl', 'next')
             logger.info("Skipped to next episode")
         except Exception as e:
             logger.error(f"Next episode failed: {e}")
@@ -278,6 +280,13 @@ class PlayerPodcast:
             podcast_id = feed_data['podcast_id']
             episodes = feed_data['episodes']
 
+            # Store podcast metadata for status display
+            self.current_podcast_metadata = {
+                'title': feed_data.get('title', 'Unknown Podcast'),
+                'author': feed_data.get('author', ''),
+                'image_url': feed_data.get('image_url', '')
+            }
+
             if not episodes:
                 logger.warning("No episodes found in feed")
                 return
@@ -317,11 +326,11 @@ class PlayerPodcast:
             # Play via MPD
             with self.lock:
                 # Clear MPD and add all episodes
-                plugs.call('playermpd', 'ctrl', 'stop')
-                mpd_client = plugs.call('playermpd', 'ctrl', 'mpd_client')
+                plugs.call('player', 'ctrl', 'stop')
+                mpd_client = plugs.call('player', 'ctrl', 'mpd_client')
 
                 if mpd_client:
-                    with plugs.call('playermpd', 'ctrl', 'mpd_lock'):
+                    with plugs.call('player', 'ctrl', 'mpd_lock'):
                         mpd_client.clear()
                         for url in playlist_urls:
                             mpd_client.addid(url)
@@ -338,6 +347,9 @@ class PlayerPodcast:
                 self.current_episode_guid = playable_episodes[start_index]['guid']
                 self.current_feed_url = feed_url
                 self.playback_active = True
+
+                # Store current episode metadata for status display
+                self.current_episode_metadata = playable_episodes[start_index]
 
                 self.state_manager.update_last_played(
                     podcast_id,
@@ -360,10 +372,12 @@ class PlayerPodcast:
             feed_url: RSS feed URL
             episode_guid: Episode GUID
         """
+        logger.warning(f"[DEBUG] play_podcast_episode called with feed_url={feed_url}, episode_guid={episode_guid}")
         try:
             logger.info(f"Playing specific episode: {episode_guid}")
 
             # Fetch feed
+            logger.warning(f"[DEBUG] Fetching feed from {feed_url}")
             feed_data = self.feed_manager.fetch_feed(feed_url)
             if not feed_data:
                 logger.error("Failed to fetch podcast feed")
@@ -371,6 +385,14 @@ class PlayerPodcast:
 
             podcast_id = feed_data['podcast_id']
             episodes = feed_data['episodes']
+            logger.warning(f"[DEBUG] Got {len(episodes)} episodes from feed")
+
+            # Store podcast metadata for status display
+            self.current_podcast_metadata = {
+                'title': feed_data.get('title', 'Unknown Podcast'),
+                'author': feed_data.get('author', ''),
+                'image_url': feed_data.get('image_url', '')
+            }
 
             # Find specific episode
             episode = self.queue_manager.get_episode_by_guid(episodes, episode_guid)
@@ -378,23 +400,27 @@ class PlayerPodcast:
                 logger.error(f"Episode not found: {episode_guid}")
                 return
 
+            # Store episode metadata for status display
+            self.current_episode_metadata = episode
+
+            logger.warning(f"[DEBUG] Found episode: {episode['title']}, URL: {episode['url']}")
+
             # Get resume position
             resume_position = self.state_manager.get_resume_position(episode_guid)
+            logger.warning(f"[DEBUG] Resume position: {resume_position}")
 
             # Play via MPD
+            logger.warning("[DEBUG] About to play via MPD")
             with self.lock:
-                plugs.call('playermpd', 'ctrl', 'stop')
-                mpd_client = plugs.call('playermpd', 'ctrl', 'mpd_client')
+                # Use playermpd's play_single method to play the URL
+                logger.warning(f"[DEBUG] Calling player.ctrl.play_single with URL: {episode['url']}")
+                plugs.call('player', 'ctrl', 'play_single', args=(episode['url'],))
+                logger.warning("[DEBUG] play_single completed")
 
-                if mpd_client:
-                    with plugs.call('playermpd', 'ctrl', 'mpd_lock'):
-                        mpd_client.clear()
-                        mpd_client.addid(episode['url'])
-                        mpd_client.play()
-
-                        if resume_position > 0:
-                            mpd_client.seekcur(resume_position)
-                            logger.info(f"Resuming from {resume_position}s")
+                # TODO: Implement resume position seeking
+                if resume_position > 0:
+                    logger.warning(f"[DEBUG] Resume position {resume_position}s not yet implemented for podcasts")
+                    # Need to implement seeking after playback starts
 
                 # Update state
                 self.current_podcast_id = podcast_id
@@ -404,7 +430,7 @@ class PlayerPodcast:
 
                 self.state_manager.update_last_played(podcast_id, episode_guid, feed_url)
 
-            logger.info(f"Playing episode: {episode['title']}")
+            logger.warning(f"[DEBUG] Finished play_podcast_episode, episode: {episode['title']}")
 
         except Exception as e:
             logger.error(f"Play podcast episode failed: {e}", exc_info=True)
@@ -447,59 +473,59 @@ class PlayerPodcast:
     @plugs.tag
     def playerstatus(self) -> Dict[str, Any]:
         """
-        Get current player status
+        Get current player status in Web UI-compatible format
 
         Returns:
-            Dictionary with current playback state
+            Dictionary with playback state compatible with Web UI Player component
         """
         try:
-            # Get MPD status
-            mpd_status = plugs.call('playermpd', 'ctrl', 'playerstatus')
+            # Get base MPD status
+            mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
 
+            if not mpd_status or not self.playback_active:
+                # Return minimal status when not playing
+                return {
+                    'state': 'stop',
+                    'elapsed': 0,
+                    'duration': 0
+                }
+
+            # Build Web UI-compatible status
             status = {
-                'state': 'stopped',
-                'current_podcast': None,
-                'current_episode': None,
-                'position': 0,
-                'duration': 0,
-                'playback_active': self.playback_active
+                # Playback state from MPD
+                'state': mpd_status.get('state', 'stop'),
+                'elapsed': float(mpd_status.get('elapsed', 0)),
+                'duration': float(mpd_status.get('duration', 0)),
+                'random': mpd_status.get('random', '0'),
+                'repeat': mpd_status.get('repeat', '0'),
+                'single': mpd_status.get('single', '0'),
             }
 
-            if mpd_status:
-                status['state'] = mpd_status.get('state', 'stopped')
-                status['position'] = float(mpd_status.get('elapsed', 0))
-                status['duration'] = float(mpd_status.get('duration', 0))
-
-            # Add podcast-specific info
-            if self.current_podcast_id and self.current_episode_guid:
-                podcast_info = self.state_manager.get_podcast(self.current_podcast_id)
-                episode_state = self.state_manager.get_episode_state(self.current_episode_guid)
-
-                status['current_podcast'] = {
-                    'id': self.current_podcast_id,
-                    'feed_url': self.current_feed_url,
-                    'title': podcast_info.get('title', 'Unknown') if podcast_info else 'Unknown'
-                }
-
-                status['current_episode'] = {
-                    'guid': self.current_episode_guid,
-                    'position': episode_state.get('position_seconds', 0),
-                    'completed': episode_state.get('completed', False)
-                }
+            # Add podcast metadata if available
+            if self.current_episode_metadata and self.current_podcast_metadata:
+                status.update({
+                    'songid': self.current_episode_guid,  # For UI existence check
+                    'title': self.current_episode_metadata.get('title', 'Unknown Episode'),
+                    'artist': self.current_podcast_metadata.get('author', 'Unknown Podcast'),
+                    'album': self.current_podcast_metadata.get('title', 'Unknown Podcast'),
+                    'file': self.current_episode_metadata.get('url', ''),  # Audio URL for reference
+                })
 
             return status
 
         except Exception as e:
             logger.debug(f"Playerstatus error: {e}")
-            return {'state': 'stopped', 'playback_active': False}
+            return {'state': 'stop', 'elapsed': 0, 'duration': 0}
 
     @plugs.tag
     def stop(self):
         """Stop podcast playback"""
         try:
             with self.lock:
-                plugs.call('playermpd', 'ctrl', 'stop')
+                plugs.call('player', 'ctrl', 'stop')
                 self.playback_active = False
+                self.current_episode_metadata = None
+                self.current_podcast_metadata = None
             logger.info("Stopped podcast playback")
         except Exception as e:
             logger.error(f"Stop failed: {e}")
@@ -513,7 +539,7 @@ class PlayerPodcast:
             state: 1 to pause, 0 to resume
         """
         try:
-            plugs.call('playermpd', 'ctrl', 'pause', state)
+            plugs.call('player', 'ctrl', 'pause', state)
         except Exception as e:
             logger.error(f"Pause failed: {e}")
 
@@ -521,7 +547,7 @@ class PlayerPodcast:
     def play(self):
         """Resume playback"""
         try:
-            plugs.call('playermpd', 'ctrl', 'play')
+            plugs.call('player', 'ctrl', 'play')
         except Exception as e:
             logger.error(f"Play failed: {e}")
 
@@ -534,7 +560,7 @@ class PlayerPodcast:
     def prev(self):
         """Skip to previous episode"""
         try:
-            plugs.call('playermpd', 'ctrl', 'prev')
+            plugs.call('player', 'ctrl', 'prev')
             logger.info("Skipped to previous episode")
         except Exception as e:
             logger.error(f"Previous episode failed: {e}")
