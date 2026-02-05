@@ -14,7 +14,7 @@ import request from '../../utils/request';
 
 const Player = () => {
   const { state: { playerstatus } } = useContext(PlayerContext);
-  const { file } = playerstatus || {};
+  const { file, coverart_url } = playerstatus || {};
 
   const [coverImage, setCoverImage] = useState(undefined);
   const [backgroundImage, setBackgroundImage] = useState('none');
@@ -26,7 +26,23 @@ const Player = () => {
   const { show_covers } = settings;
 
   useEffect(() => {
+    console.log('Player useEffect - file:', file, 'coverart_url:', coverart_url);
+    console.log('Full playerstatus:', playerstatus);
+
+    // If coverart_url is provided (podcasts), use it directly
+    if (coverart_url) {
+      console.log('Using coverart_url:', coverart_url);
+      setCoverImage(coverart_url);
+      setBackgroundImage([
+        'linear-gradient(to bottom, rgba(18, 18, 18, 0.5), rgba(18, 18, 18, 1))',
+        `url(${coverart_url})`
+      ].join(','));
+      return;
+    }
+
+    // Otherwise, fetch from local cache (for local music files)
     const getCoverArt = async () => {
+      console.log('Fetching coverart via RPC for file:', file);
       const { result } = await request('getSingleCoverArt', { song_url: file });
       if (result) {
         setCoverImage(`/cover-cache/${result}`);
@@ -37,10 +53,10 @@ const Player = () => {
       };
     }
 
-    if (file && show_covers) {
+    if (file) {
       getCoverArt();
     }
-  }, [file]);
+  }, [file, coverart_url]);
 
   return (
     <Grid

@@ -34,6 +34,9 @@ References:
 import logging
 import threading
 import time
+import hashlib
+import requests
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 import jukebox.cfghandler
@@ -65,6 +68,8 @@ class PlayerPodcast:
         self.save_position_interval = cfg.getn('playerpodcast', 'save_position_interval', default=10)
         self.completion_threshold = cfg.getn('playerpodcast', 'completion_threshold', default=0.9)
         self.episode_order = cfg.getn('playerpodcast', 'episode_order', default='newest_first')
+        self.coverart_cache_path = Path(cfg.getn('webapp', 'coverart_cache_path',
+                                                  default='../../src/webapp/build/cover-cache')).expanduser()
 
         # iTunes API configuration
         itunes_enabled = cfg.getn('playerpodcast', 'itunes_api', 'enabled', default=True)
@@ -142,13 +147,14 @@ class PlayerPodcast:
             time.sleep(self.save_position_interval)
 
     def _status_publisher_loop(self):
-        """Background thread to publish player status every 1 second"""
+        """
+        Background thread - No longer publishes status directly.
+
+        MPD's status publisher now handles publishing and enriches with podcast
+        metadata by calling our playerstatus() method when playing podcast URLs.
+        This thread kept for potential future use.
+        """
         while not self.status_thread_stop.is_set():
-            try:
-                status = self.playerstatus()
-                publishing.get_publisher().send('playerstatus', status)
-            except Exception as e:
-                logger.debug(f"Status publishing error: {e}")
             time.sleep(1)
 
     def _toggle_playback(self):
@@ -509,6 +515,7 @@ class PlayerPodcast:
                     'artist': self.current_podcast_metadata.get('author', 'Unknown Podcast'),
                     'album': self.current_podcast_metadata.get('title', 'Unknown Podcast'),
                     'file': self.current_episode_metadata.get('url', ''),  # Audio URL for reference
+                    'coverart_url': self.current_podcast_metadata.get('image_url', ''),  # Podcast artwork URL
                 })
 
             return status
@@ -574,6 +581,73 @@ class PlayerPodcast:
             Dictionary with overall stats
         """
         return self.state_manager.get_stats()
+
+    @plugs.tag
+    def get_coverart(self, episode_url: str) -> str:
+        """
+        Get cached podcast cover art for a given episode URL
+
+        Downloads and caches the podcast artwork if not already cached.
+        Uses the podcast's artwork (not episode-specific, as podcasts typically
+        have one artwork for the entire show).
+
+        Args:
+            episode_url: The episode audio URL (used to identify the podcast)
+
+        Returns:
+            Cached cover art filename or empty string if not available
+        """
+        try:
+            logger.info(f"get_coverart called for URL: {episode_url}")
+
+            # Check if we have podcast metadata
+            if not self.current_podcast_metadata:
+                logger.warning("No podcast metadata available")
+                return ''
+
+            # Get the podcast image URL
+            image_url = self.current_podcast_metadata.get('image_url')
+            if not image_url:
+                logger.warning("No image_url in podcast metadata")
+                return ''
+
+            logger.info(f"Podcast image URL: {image_url}")
+
+            # Generate cache key based on image URL
+            cache_key = f"cover-{hashlib.sha256(image_url.encode()).hexdigest()}"
+
+            # Check if already cached
+            for path in self.coverart_cache_path.iterdir():
+                if path.stem == cache_key:
+                    logger.info(f"Found cached cover art: {path.name}")
+                    return path.name
+
+            # Download and cache the image
+            logger.info(f"Downloading podcast cover art from {image_url}")
+            response = requests.get(image_url, timeout=10)
+            response.raise_for_status()
+
+            # Determine file extension from content type
+            content_type = response.headers.get('content-type', '')
+            if 'jpeg' in content_type or 'jpg' in content_type:
+                ext = 'jpg'
+            elif 'png' in content_type:
+                ext = 'png'
+            else:
+                ext = 'jpg'  # Default to jpg
+
+            # Save to cache
+            cache_filename = f"{cache_key}.{ext}"
+            cache_path = self.coverart_cache_path / cache_filename
+            with cache_path.open('wb') as f:
+                f.write(response.content)
+
+            logger.info(f"Cached podcast cover art as {cache_filename}")
+            return cache_filename
+
+        except Exception as e:
+            logger.error(f"Failed to get podcast cover art: {e}", exc_info=True)
+            return ''
 
     def exit(self):
         """Cleanup on plugin shutdown"""

@@ -301,6 +301,25 @@ class PlayerMPD:
             del self.mpd_status['volume']
         except KeyError:
             pass
+
+        # Check if playing a podcast (URL) and enrich with podcast metadata
+        current_file = self.mpd_status.get('file', '')
+        if current_file and (current_file.startswith('http://') or current_file.startswith('https://')):
+            # Try to get podcast metadata if podcast player is active
+            try:
+                podcast_status = plugs.call('player_podcast', 'ctrl', 'playerstatus')
+                if podcast_status and podcast_status.get('title'):
+                    # Enrich MPD status with podcast metadata
+                    self.mpd_status.update({
+                        'title': podcast_status.get('title'),
+                        'artist': podcast_status.get('artist'),
+                        'album': podcast_status.get('album'),
+                        'songid': podcast_status.get('songid'),
+                        'coverart_url': podcast_status.get('coverart_url')
+                    })
+            except Exception:
+                pass  # Podcast player not active or not available
+
         publishing.get_publisher().send('playerstatus', self.mpd_status)
 
     # MPD can play absolute paths but can find songs in its database only by relative path
@@ -579,6 +598,19 @@ class PlayerMPD:
 
     @plugs.tag
     def get_single_coverart(self, song_url):
+        # Check if this is a podcast URL (http/https)
+        if song_url and (song_url.startswith('http://') or song_url.startswith('https://')):
+            # Delegate to podcast player for podcast cover art
+            try:
+                logger.info(f"Delegating coverart request for podcast URL: {song_url}")
+                result = plugs.call('player_podcast', 'ctrl', 'get_coverart', song_url)
+                logger.info(f"Podcast coverart result: {result}")
+                return result
+            except Exception as e:
+                logger.error(f"Failed to get podcast coverart: {e}", exc_info=True)
+                return ''  # Podcast player not available or no cover art
+
+        # Handle local files normally
         mp3_file_path = Path(components.player.get_music_library_path(), song_url).expanduser()
         cache_filename = self.coverart_cache_manager.get_cache_filename(mp3_file_path)
 
