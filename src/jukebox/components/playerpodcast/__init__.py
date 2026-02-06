@@ -326,36 +326,30 @@ class PlayerPodcast:
                 logger.info(f"Resuming from episode {resume_index + 1}/{len(playable_episodes)} "
                            f"at {resume_position}s")
 
-            # Generate MPD playlist
-            playlist_urls = self.queue_manager.generate_mpd_playlist(playable_episodes)
+            # Play via MPD - start with the first (or resume) episode
+            episode_to_play = playable_episodes[start_index]
 
-            # Play via MPD
             with self.lock:
-                # Clear MPD and add all episodes
-                plugs.call('player', 'ctrl', 'stop')
-                mpd_client = plugs.call('player', 'ctrl', 'mpd_client')
+                # Use MPD's play_single method to play the episode URL
+                plugs.call('player', 'ctrl', 'play_single', args=(episode_to_play['url'],))
 
-                if mpd_client:
-                    with plugs.call('player', 'ctrl', 'mpd_lock'):
-                        mpd_client.clear()
-                        for url in playlist_urls:
-                            mpd_client.addid(url)
+                # TODO: Implement resume position seeking
+                if resume_position > 0:
+                    logger.warning(f"Resume position {resume_position}s not yet implemented for podcast series")
 
-                        # Start playback from resume index
-                        mpd_client.play(start_index)
-
-                        # Seek to resume position if needed
-                        if resume_position > 0:
-                            mpd_client.seekcur(resume_position)
+                # TODO: Implement playlist queuing for multiple episodes
+                if len(playable_episodes) > 1:
+                    logger.info(f"Playing first episode of {len(playable_episodes)} episodes. "
+                              "Playlist queuing not yet implemented.")
 
                 # Update state
                 self.current_podcast_id = podcast_id
-                self.current_episode_guid = playable_episodes[start_index]['guid']
+                self.current_episode_guid = episode_to_play['guid']
                 self.current_feed_url = feed_url
                 self.playback_active = True
 
                 # Store current episode metadata for status display
-                self.current_episode_metadata = playable_episodes[start_index]
+                self.current_episode_metadata = episode_to_play
 
                 self.state_manager.update_last_played(
                     podcast_id,
