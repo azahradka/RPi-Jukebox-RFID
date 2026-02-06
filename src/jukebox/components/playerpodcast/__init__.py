@@ -333,10 +333,6 @@ class PlayerPodcast:
                 # Use MPD's play_single method to play the episode URL
                 plugs.call('player', 'ctrl', 'play_single', args=(episode_to_play['url'],))
 
-                # TODO: Implement resume position seeking
-                if resume_position > 0:
-                    logger.warning(f"Resume position {resume_position}s not yet implemented for podcast series")
-
                 # TODO: Implement playlist queuing for multiple episodes
                 if len(playable_episodes) > 1:
                     logger.info(f"Playing first episode of {len(playable_episodes)} episodes. "
@@ -356,6 +352,17 @@ class PlayerPodcast:
                     self.current_episode_guid,
                     feed_url
                 )
+
+            # Attempt to seek to resume position (note: streaming URLs may not support seeking)
+            if resume_position > 0:
+                try:
+                    logger.info(f"Resuming from position: {resume_position}s")
+                    # Wait for MPD to start playback
+                    time.sleep(1.0)
+                    # Attempt seek - will silently fail if stream is not seekable
+                    plugs.call('player', 'ctrl', 'seek', args=(resume_position,))
+                except Exception as e:
+                    logger.debug(f"Seek failed (stream may not support seeking): {e}")
 
             logger.info(f"Started playback: {len(playable_episodes)} episodes, "
                        f"starting at index {start_index}")
@@ -417,11 +424,6 @@ class PlayerPodcast:
                 plugs.call('player', 'ctrl', 'play_single', args=(episode['url'],))
                 logger.warning("[DEBUG] play_single completed")
 
-                # TODO: Implement resume position seeking
-                if resume_position > 0:
-                    logger.warning(f"[DEBUG] Resume position {resume_position}s not yet implemented for podcasts")
-                    # Need to implement seeking after playback starts
-
                 # Update state
                 self.current_podcast_id = podcast_id
                 self.current_episode_guid = episode_guid
@@ -429,6 +431,17 @@ class PlayerPodcast:
                 self.playback_active = True
 
                 self.state_manager.update_last_played(podcast_id, episode_guid, feed_url)
+
+            # Attempt to seek to resume position (note: streaming URLs may not support seeking)
+            if resume_position > 0:
+                try:
+                    logger.info(f"Resuming from position: {resume_position}s")
+                    # Wait for MPD to start playback
+                    time.sleep(1.0)
+                    # Attempt seek - will silently fail if stream is not seekable
+                    plugs.call('player', 'ctrl', 'seek', args=(resume_position,))
+                except Exception as e:
+                    logger.debug(f"Seek failed (stream may not support seeking): {e}")
 
             logger.warning(f"[DEBUG] Finished play_podcast_episode, episode: {episode['title']}")
 

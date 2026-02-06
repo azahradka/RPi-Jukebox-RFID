@@ -10,6 +10,7 @@ Handles:
 """
 
 import logging
+import json
 from typing import Dict, Optional, Any
 from datetime import datetime, timezone
 
@@ -50,8 +51,17 @@ class PodcastStateManager:
                     f"{len(self.state.get('episodes', {}))} episodes tracked")
 
     def _save(self):
-        """Save state to disk"""
-        self.nvm.save_all()
+        """
+        Save state to disk
+
+        Note: Direct JSON write bypasses NvManager due to issue with nested dict modifications
+        not triggering hash updates. See: https://github.com/MiczFlor/RPi-Jukebox-RFID/issues/[TBD]
+        """
+        try:
+            with open(self.status_file, 'w') as f:
+                json.dump(dict(self.state), f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save podcast state: {e}")
 
     def add_podcast(self, podcast_id: str, feed_url: str, title: str):
         """
