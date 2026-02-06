@@ -42,7 +42,6 @@ from typing import Optional, Dict, Any, List
 import jukebox.cfghandler
 import jukebox.plugs as plugs
 import jukebox.publishing as publishing
-from jukebox.NvManager import nv_manager
 
 from .feed_manager import PodcastFeedManager
 from .episode_queue import EpisodeQueueManager
@@ -57,8 +56,6 @@ class PlayerPodcast:
 
     def __init__(self):
         """Initialize Podcast player plugin"""
-        self.nvm = nv_manager()
-
         # Load configuration
         self.status_file = cfg.getn('playerpodcast', 'status_file',
                                     default='../../shared/settings/podcast_player_status.json')
@@ -78,7 +75,6 @@ class PlayerPodcast:
         # Initialize managers
         self.lock = threading.RLock()
         self.state_manager = PodcastStateManager(
-            self.nvm,
             self.status_file,
             self.completion_threshold
         )

@@ -87,6 +87,7 @@ import threading
 import logging
 import time
 import functools
+import json
 from pathlib import Path
 import components.player
 import jukebox.cfghandler
@@ -97,7 +98,6 @@ import jukebox.publishing as publishing
 import jukebox.playlistgenerator as playlistgenerator
 import misc
 
-from jukebox.NvManager import nv_manager
 from .playcontentcallback import PlayContentCallbacks, PlayCardState
 from .coverart_cache_manager import CoverartCacheManager
 
@@ -143,9 +143,9 @@ class PlayerMPD:
     """Interface to MPD Music Player Daemon"""
 
     def __init__(self):
-        self.nvm = nv_manager()
         self.mpd_host = cfg.getn('playermpd', 'host')
-        self.music_player_status = self.nvm.load(cfg.getn('playermpd', 'status_file'))
+        self.status_file = cfg.getn('playermpd', 'status_file')
+        self.music_player_status = self._load_state()
 
         self.second_swipe_action_dict = {'toggle': self.toggle,
                                          'play': self.play,
@@ -197,7 +197,7 @@ class PlayerMPD:
         if not self.music_player_status:
             self.music_player_status['player_status'] = {}
             self.music_player_status['audio_folder_status'] = {}
-            self.music_player_status.save_to_json()
+            self._save_state()
             self.current_folder_status = {}
             self.music_player_status['player_status']['last_played_folder'] = ''
         else:
@@ -229,12 +229,31 @@ class PlayerMPD:
                                                                  self.mpd_status_poll_interval, self._mpd_status_poll)
         self.status_thread.start()
 
+    def _load_state(self):
+        """Load player status from JSON file"""
+        if os.path.exists(self.status_file):
+            try:
+                with open(self.status_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load player status: {e}")
+                return {}
+        return {}
+
+    def _save_state(self):
+        """Save player status to JSON file"""
+        try:
+            with open(self.status_file, 'w') as f:
+                json.dump(self.music_player_status, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save player status: {e}")
+
     def exit(self):
         logger.debug("Exit routine of playermpd started")
         self.status_is_closing = True
         self.status_thread.cancel()
         self.mpd_client.disconnect()
-        self.nvm.save_all()
+        self._save_state()
         return self.status_thread.timer_thread
 
     def connect(self):
@@ -677,6 +696,7 @@ class PlayerMPD:
                 self.current_folder_status = self.music_player_status['audio_folder_status'][folder] = {}
 
             self.mpd_client.play()
+            self._save_state()
 
     @plugs.tag
     def play_album(self, albumartist: str, album: str):

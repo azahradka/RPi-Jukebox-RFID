@@ -11,6 +11,7 @@ Handles:
 
 import logging
 import json
+import os
 from typing import Dict, Optional, Any
 from datetime import datetime, timezone
 
@@ -20,46 +21,62 @@ logger = logging.getLogger('jb.PodcastStateManager')
 class PodcastStateManager:
     """Manages podcast playback state and persistence"""
 
-    def __init__(self, nvm, status_file: str, completion_threshold: float = 0.9):
+    def __init__(self, status_file: str, completion_threshold: float = 0.9):
         """
         Initialize state manager
 
         Args:
-            nvm: NvManager instance for persistence
             status_file: Path to status JSON file
             completion_threshold: Percentage threshold for episode completion (0.0-1.0)
         """
-        self.nvm = nvm
         self.status_file = status_file
         self.completion_threshold = completion_threshold
 
         # Load or initialize state
-        self.state = self.nvm.load(status_file)
-        if not self.state:
-            self.state = {
-                'podcasts': {},      # podcast_id -> podcast metadata
-                'episodes': {},      # episode_guid -> episode state
-                'last_played': {     # Last played podcast/episode for resume
-                    'podcast_id': None,
-                    'episode_guid': None,
-                    'feed_url': None
-                }
-            }
-            self._save()
+        self.state = self._load()
 
         logger.info(f"Podcast state loaded: {len(self.state.get('podcasts', {}))} podcasts, "
                     f"{len(self.state.get('episodes', {}))} episodes tracked")
 
-    def _save(self):
-        """
-        Save state to disk
+    def _load(self):
+        """Load podcast state from JSON file"""
+        if os.path.exists(self.status_file):
+            try:
+                with open(self.status_file, 'r') as f:
+                    state = json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load podcast state: {e}")
+                state = {}
+        else:
+            state = {}
 
-        Note: Direct JSON write bypasses NvManager due to issue with nested dict modifications
-        not triggering hash updates. See: https://github.com/MiczFlor/RPi-Jukebox-RFID/issues/[TBD]
-        """
+        # Initialize structure if needed
+        if 'podcasts' not in state:
+            state['podcasts'] = {}
+        if 'episodes' not in state:
+            state['episodes'] = {}
+        if 'last_played' not in state:
+            state['last_played'] = {
+                'podcast_id': None,
+                'episode_guid': None,
+                'feed_url': None
+            }
+
+        # Save initial state if file didn't exist
+        if not os.path.exists(self.status_file):
+            self._save_state(state)
+
+        return state
+
+    def _save(self):
+        """Save state to disk"""
+        self._save_state(self.state)
+
+    def _save_state(self, state):
+        """Save podcast state to JSON file"""
         try:
             with open(self.status_file, 'w') as f:
-                json.dump(dict(self.state), f, indent=2)
+                json.dump(state, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save podcast state: {e}")
 
