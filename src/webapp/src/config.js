@@ -15,6 +15,10 @@ const SUBSCRIPTIONS = [
   'playerstatus',
   'rfid.card_id',
   'volume.level',
+  'podcast.download_started',
+  'podcast.download_progress',
+  'podcast.download_completed',
+  'podcast.download_failed',
 ];
 
 const ROOT_DIR = './';

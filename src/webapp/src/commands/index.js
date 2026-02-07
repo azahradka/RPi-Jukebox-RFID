@@ -342,6 +342,22 @@ const commands = {
     method: 'play_podcast_episode',
     argKeys: ['feed_url', 'episode_guid']
   },
+  getPodcastCacheStats: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'get_cache_stats'
+  },
+  clearPodcastCache: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'clear_episode_cache'
+  },
+  evictPodcastEpisode: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'evict_episode',
+    argKeys: ['episode_guid']
+  },
 };
 
 export default commands;

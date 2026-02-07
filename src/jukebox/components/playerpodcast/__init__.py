@@ -46,6 +46,7 @@ import jukebox.publishing as publishing
 from .feed_manager import PodcastFeedManager
 from .episode_queue import EpisodeQueueManager
 from .state_manager import PodcastStateManager
+from .episode_downloader import EpisodeDownloadManager
 
 logger = logging.getLogger('jb.PlayerPodcast')
 cfg = jukebox.cfghandler.get_handler('jukebox')
@@ -85,6 +86,28 @@ class PlayerPodcast:
             itunes_search_limit=itunes_search_limit
         )
         self.queue_manager = EpisodeQueueManager(self.state_manager)
+
+        # Episode download cache configuration
+        episode_cache_cfg = cfg.getn('playerpodcast', 'episode_cache', default={})
+        episode_cache_enabled = episode_cache_cfg.get('enabled', True)
+        episode_cache_path = Path(episode_cache_cfg.get('cache_path',
+                                                         '../../shared/cache/podcasts/episodes/')).expanduser()
+        max_cache_size_mb = episode_cache_cfg.get('max_cache_size_mb', 2048)
+        download_timeout = episode_cache_cfg.get('download_timeout', 300)
+        min_free_space_mb = episode_cache_cfg.get('min_free_space_mb', 500)
+        self.resume_download_threshold = episode_cache_cfg.get('resume_download_threshold', 30)
+
+        # Initialize episode downloader
+        if episode_cache_enabled:
+            self.episode_downloader = EpisodeDownloadManager(
+                cache_path=episode_cache_path,
+                max_cache_size_mb=max_cache_size_mb,
+                download_timeout=download_timeout,
+                min_free_space_mb=min_free_space_mb
+            )
+        else:
+            self.episode_downloader = None
+            logger.info("Episode cache disabled")
 
         # Playback state
         self.current_podcast_id = None
@@ -263,7 +286,7 @@ class PlayerPodcast:
             return False
 
     @plugs.tag
-    def play_podcast_series(self, feed_url: str):
+    def play_podcast_series(self, feed_url: str):  # noqa: C901
         """
         Play entire podcast series (newest to oldest, skip completed, auto-reset)
 
@@ -311,7 +334,10 @@ class PlayerPodcast:
                 return
 
             # Check for resume
+            logger.warning(f"[RESUME-DEBUG] Checking for resume: "
+                          f"playable_episodes={len(playable_episodes)}, was_reset={was_reset}")
             resume_info = self.queue_manager.find_resume_episode(playable_episodes)
+            logger.warning(f"[RESUME-DEBUG] resume_info={resume_info}")
             start_index = 0
             resume_position = 0
 
@@ -319,15 +345,75 @@ class PlayerPodcast:
                 resume_episode, resume_index = resume_info
                 start_index = resume_index
                 resume_position = self.state_manager.get_resume_position(resume_episode['guid'])
+                logger.warning(f"[RESUME-DEBUG] Found resume: episode_index={resume_index}, resume_position={resume_position}")
                 logger.info(f"Resuming from episode {resume_index + 1}/{len(playable_episodes)} "
                            f"at {resume_position}s")
+            else:
+                logger.warning(f"[RESUME-DEBUG] No resume: resume_info={resume_info}, was_reset={was_reset}")
 
             # Play via MPD - start with the first (or resume) episode
             episode_to_play = playable_episodes[start_index]
+            logger.info(f"Playing episode at index {start_index}: {episode_to_play.get('title', 'Unknown')}")
+
+            # Determine playback source (stream vs local file)
+            playback_url = episode_to_play['url']  # Default: stream from CDN
+            podcast_title = self.current_podcast_metadata.get('title', 'Unknown Podcast')
+            episode_guid = episode_to_play['guid']
+
+            # Check if download is needed (resume > threshold OR already cached)
+            should_download = False
+            if self.episode_downloader:
+                should_download = (
+                    resume_position > self.resume_download_threshold or  # noqa: W504
+                    self.episode_downloader.is_cached(episode_guid)
+                )
+
+            if should_download and self.episode_downloader:
+                try:
+                    # Check if already cached
+                    local_path = self.episode_downloader.get_local_path(episode_guid)
+
+                    if not local_path:
+                        logger.info(f"Resume position {resume_position}s requires download")
+
+                        # Publish download start event
+                        publishing.get_publisher().send('podcast.download_started', {
+                            'episode_guid': episode_guid,
+                            'episode_title': episode_to_play['title'],
+                            'episode_url': episode_to_play['url']
+                        })
+
+                        # Synchronous download (blocking)
+                        local_path = self.episode_downloader.download_episode(
+                            episode_to_play['url'],
+                            episode_guid,
+                            episode_title=episode_to_play['title'],
+                            podcast_title=podcast_title
+                        )
+
+                        # Publish download complete event
+                        publishing.get_publisher().send('podcast.download_completed', {
+                            'episode_guid': episode_guid,
+                            'local_path': str(local_path)
+                        })
+                    else:
+                        logger.info(f"Using cached episode: {local_path}")
+
+                    if local_path and local_path.exists():
+                        playback_url = str(local_path)
+                        logger.info(f"Playing local file: {playback_url}")
+                except Exception as e:
+                    logger.warning(f"Download failed, falling back to stream: {e}")
+                    # Publish download failed event
+                    publishing.get_publisher().send('podcast.download_failed', {
+                        'episode_guid': episode_guid,
+                        'error': str(e)
+                    })
+                    # Fallback to streaming (use original episode URL)
 
             with self.lock:
                 # Use MPD's play_single method to play the episode URL
-                plugs.call('player', 'ctrl', 'play_single', args=(episode_to_play['url'],))
+                plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
 
                 # TODO: Implement playlist queuing for multiple episodes
                 if len(playable_episodes) > 1:
@@ -336,7 +422,7 @@ class PlayerPodcast:
 
                 # Update state
                 self.current_podcast_id = podcast_id
-                self.current_episode_guid = episode_to_play['guid']
+                self.current_episode_guid = episode_guid
                 self.current_feed_url = feed_url
                 self.playback_active = True
 
@@ -345,20 +431,22 @@ class PlayerPodcast:
 
                 self.state_manager.update_last_played(
                     podcast_id,
-                    self.current_episode_guid,
+                    episode_guid,
                     feed_url
                 )
 
-            # Attempt to seek to resume position (note: streaming URLs may not support seeking)
+            # Attempt to seek to resume position
             if resume_position > 0:
                 try:
-                    logger.info(f"Resuming from position: {resume_position}s")
                     # Wait for MPD to start playback
                     time.sleep(1.0)
-                    # Attempt seek - will silently fail if stream is not seekable
                     plugs.call('player', 'ctrl', 'seek', args=(resume_position,))
+                    if playback_url.startswith('http'):
+                        logger.debug("Seek attempted on stream (will fail silently)")
+                    else:
+                        logger.info(f"Seeked to {resume_position}s in local file")
                 except Exception as e:
-                    logger.debug(f"Seek failed (stream may not support seeking): {e}")
+                    logger.debug(f"Seek failed: {e}")
 
             logger.info(f"Started playback: {len(playable_episodes)} episodes, "
                        f"starting at index {start_index}")
@@ -367,7 +455,7 @@ class PlayerPodcast:
             logger.error(f"Play podcast series failed: {e}", exc_info=True)
 
     @plugs.tag
-    def play_podcast_episode(self, feed_url: str, episode_guid: str):
+    def play_podcast_episode(self, feed_url: str, episode_guid: str):  # noqa: C901
         """
         Play specific podcast episode with resume
 
@@ -410,14 +498,68 @@ class PlayerPodcast:
 
             # Get resume position
             resume_position = self.state_manager.get_resume_position(episode_guid)
-            logger.warning(f"[DEBUG] Resume position: {resume_position}")
+            logger.info(f"Resume position: {resume_position}s")
+
+            # Determine playback source (stream vs local file)
+            playback_url = episode['url']  # Default: stream from CDN
+            podcast_title = self.current_podcast_metadata.get('title', 'Unknown Podcast')
+
+            # Check if download is needed (resume > threshold OR already cached)
+            should_download = False
+            if self.episode_downloader:
+                should_download = (
+                    resume_position > self.resume_download_threshold or  # noqa: W504
+                    self.episode_downloader.is_cached(episode_guid)
+                )
+
+            if should_download and self.episode_downloader:
+                try:
+                    # Check if already cached
+                    local_path = self.episode_downloader.get_local_path(episode_guid)
+
+                    if not local_path:
+                        logger.info(f"Resume position {resume_position}s requires download")
+
+                        # Publish download start event
+                        publishing.get_publisher().send('podcast.download_started', {
+                            'episode_guid': episode_guid,
+                            'episode_title': episode['title'],
+                            'episode_url': episode['url']
+                        })
+
+                        # Synchronous download (blocking)
+                        local_path = self.episode_downloader.download_episode(
+                            episode['url'],
+                            episode_guid,
+                            episode_title=episode['title'],
+                            podcast_title=podcast_title
+                        )
+
+                        # Publish download complete event
+                        publishing.get_publisher().send('podcast.download_completed', {
+                            'episode_guid': episode_guid,
+                            'local_path': str(local_path)
+                        })
+                    else:
+                        logger.info(f"Using cached episode: {local_path}")
+
+                    if local_path and local_path.exists():
+                        playback_url = str(local_path)
+                        logger.info(f"Playing local file: {playback_url}")
+                except Exception as e:
+                    logger.warning(f"Download failed, falling back to stream: {e}")
+                    # Publish download failed event
+                    publishing.get_publisher().send('podcast.download_failed', {
+                        'episode_guid': episode_guid,
+                        'error': str(e)
+                    })
+                    # Fallback to streaming (use original episode['url'])
 
             # Play via MPD
-            logger.warning("[DEBUG] About to play via MPD")
+            logger.info(f"Playing episode: {episode['title']}")
             with self.lock:
                 # Use playermpd's play_single method to play the URL
-                logger.warning(f"[DEBUG] Calling player.ctrl.play_single with URL: {episode['url']}")
-                plugs.call('player', 'ctrl', 'play_single', args=(episode['url'],))
+                plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
                 logger.warning("[DEBUG] play_single completed")
 
                 # Update state
@@ -428,18 +570,20 @@ class PlayerPodcast:
 
                 self.state_manager.update_last_played(podcast_id, episode_guid, feed_url)
 
-            # Attempt to seek to resume position (note: streaming URLs may not support seeking)
+            # Attempt to seek to resume position
             if resume_position > 0:
                 try:
-                    logger.info(f"Resuming from position: {resume_position}s")
                     # Wait for MPD to start playback
                     time.sleep(1.0)
-                    # Attempt seek - will silently fail if stream is not seekable
                     plugs.call('player', 'ctrl', 'seek', args=(resume_position,))
+                    if playback_url.startswith('http'):
+                        logger.debug("Seek attempted on stream (will fail silently)")
+                    else:
+                        logger.info(f"Seeked to {resume_position}s in local file")
                 except Exception as e:
-                    logger.debug(f"Seek failed (stream may not support seeking): {e}")
+                    logger.debug(f"Seek failed: {e}")
 
-            logger.warning(f"[DEBUG] Finished play_podcast_episode, episode: {episode['title']}")
+            logger.info(f"Finished playback start: {episode['title']}")
 
         except Exception as e:
             logger.error(f"Play podcast episode failed: {e}", exc_info=True)
@@ -586,6 +730,48 @@ class PlayerPodcast:
         return self.state_manager.get_stats()
 
     @plugs.tag
+    def get_cache_stats(self):
+        """
+        Get episode cache statistics
+
+        Returns:
+            Dictionary with cache statistics
+        """
+        if self.episode_downloader:
+            return self.episode_downloader.get_cache_stats()
+        else:
+            return {
+                'episode_count': 0,
+                'total_size_mb': 0,
+                'max_size_mb': 0,
+                'usage_percent': 0,
+                'free_disk_space_mb': 0,
+                'cache_path': 'N/A (cache disabled)'
+            }
+
+    @plugs.tag
+    def clear_episode_cache(self):
+        """Clear all downloaded episodes from cache"""
+        if self.episode_downloader:
+            self.episode_downloader.cleanup_cache(target_size_mb=0)
+            logger.info("Episode cache cleared")
+        else:
+            logger.warning("Episode cache is disabled")
+
+    @plugs.tag
+    def evict_episode(self, episode_guid: str):
+        """
+        Remove a specific episode from cache
+
+        Args:
+            episode_guid: Episode GUID
+        """
+        if self.episode_downloader:
+            self.episode_downloader.evict_episode(episode_guid)
+        else:
+            logger.warning("Episode cache is disabled")
+
+    @plugs.tag
     def get_coverart(self, episode_url: str) -> str:
         """
         Get cached podcast cover art for a given episode URL
@@ -662,6 +848,14 @@ class PlayerPodcast:
             self.position_thread.join(timeout=2)
         if self.status_thread.is_alive():
             self.status_thread.join(timeout=2)
+
+        # Save episode cache metadata
+        if self.episode_downloader:
+            try:
+                self.episode_downloader.save_metadata()
+                logger.info("Episode cache metadata saved")
+            except Exception as e:
+                logger.error(f"Failed to save cache metadata: {e}")
 
 
 # Global player instance

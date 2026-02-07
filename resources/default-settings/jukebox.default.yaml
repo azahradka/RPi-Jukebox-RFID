@@ -145,6 +145,15 @@ playerpodcast:
   itunes_api:
     enabled: true
     search_limit: 20  # Maximum search results
+  # Episode download cache settings
+  episode_cache:
+    enabled: true
+    cache_path: ../../shared/cache/podcasts/episodes/
+    max_cache_size_mb: 2048  # 2GB cache for ~40-100 episodes
+    resume_download_threshold: 30  # Download if resume position > 30 seconds
+    download_timeout: 300  # 5 minutes max download time
+    cleanup_on_startup: true
+    min_free_space_mb: 500  # Stop downloading if disk space < 500MB
 rpc:
   tcp_port: 5555
   websocket_port: 5556

@@ -1,6 +1,10 @@
 import React, { useContext, useEffect, useState } from 'react';
 
 import Grid from '@mui/material/Grid';
+import Box from '@mui/material/Box';
+import LinearProgress from '@mui/material/LinearProgress';
+import Typography from '@mui/material/Typography';
+import Alert from '@mui/material/Alert';
 
 import Cover from './cover';
 import Controls from './controls';
@@ -10,6 +14,7 @@ import Volume from './volume';
 
 import AppSettingsContext from '../../context/appsettings/context';
 import PlayerContext from '../../context/player/context';
+import PubSubContext from '../../context/pubsub/context';
 import request from '../../utils/request';
 
 const Player = () => {
@@ -18,12 +23,55 @@ const Player = () => {
 
   const [coverImage, setCoverImage] = useState(undefined);
   const [backgroundImage, setBackgroundImage] = useState('none');
+  const [downloadProgress, setDownloadProgress] = useState(null);
 
   const {
     settings,
   } = useContext(AppSettingsContext);
 
   const { show_covers } = settings;
+
+  // Subscribe to podcast download events
+  const { state: pubsubState } = useContext(PubSubContext);
+
+  useEffect(() => {
+    const downloadStarted = pubsubState['podcast.download_started'];
+    const downloadProgress = pubsubState['podcast.download_progress'];
+    const downloadCompleted = pubsubState['podcast.download_completed'];
+    const downloadFailed = pubsubState['podcast.download_failed'];
+
+    if (downloadStarted) {
+      setDownloadProgress({
+        status: 'downloading',
+        percent: 0,
+        title: downloadStarted.episode_title
+      });
+    } else if (downloadProgress) {
+      setDownloadProgress(prev => ({
+        ...prev,
+        percent: downloadProgress.percent || 0
+      }));
+    } else if (downloadCompleted) {
+      setDownloadProgress({
+        status: 'completed',
+        percent: 100
+      });
+      // Clear after 2 seconds
+      setTimeout(() => setDownloadProgress(null), 2000);
+    } else if (downloadFailed) {
+      setDownloadProgress({
+        status: 'failed',
+        error: downloadFailed.error
+      });
+      // Clear after 3 seconds
+      setTimeout(() => setDownloadProgress(null), 3000);
+    }
+  }, [
+    pubsubState['podcast.download_started'],
+    pubsubState['podcast.download_progress'],
+    pubsubState['podcast.download_completed'],
+    pubsubState['podcast.download_failed']
+  ]);
 
   useEffect(() => {
     console.log('Player useEffect - file:', file, 'coverart_url:', coverart_url);
@@ -82,6 +130,27 @@ const Player = () => {
         </Grid>
         <Grid item xs={12} sm={7}>
           <Display />
+          {downloadProgress && (
+            <Box sx={{ width: '100%', mt: 2, mb: 2 }}>
+              {downloadProgress.status === 'downloading' && (
+                <>
+                  <Typography variant="body2" sx={{ mb: 1 }}>
+                    Downloading episode for resume...
+                  </Typography>
+                  <LinearProgress variant="determinate" value={downloadProgress.percent} />
+                  <Typography variant="caption" sx={{ mt: 0.5 }}>
+                    {Math.round(downloadProgress.percent)}%
+                  </Typography>
+                </>
+              )}
+              {downloadProgress.status === 'completed' && (
+                <Alert severity="success">Download complete!</Alert>
+              )}
+              {downloadProgress.status === 'failed' && (
+                <Alert severity="warning">Download failed, streaming instead</Alert>
+              )}
+            </Box>
+          )}
           <SeekBar />
           <Controls />
           <Volume />
