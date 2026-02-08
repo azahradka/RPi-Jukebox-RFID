@@ -411,6 +411,25 @@ cd ~/RPi-Jukebox-RFID/src/jukebox
 pip install -e .
 ```
 
+### 3.5 Copy Default Configuration Files
+
+The jukebox requires configuration files in `shared/settings/`. The automated installer copies these from `resources/default-settings/` — we must do it manually:
+
+```bash
+cd ~/RPi-Jukebox-RFID
+
+# Create settings and logs directories
+mkdir -p shared/settings shared/logs
+
+# Copy logger config (REQUIRED - without this, logs are not written to files)
+cp resources/default-settings/logger.default.yaml shared/settings/logger.yaml
+
+# Copy main jukebox config (if not already present)
+[ -f shared/settings/jukebox.yaml ] || cp resources/default-settings/jukebox.default.yaml shared/settings/jukebox.yaml
+```
+
+**Why this matters:** Without `logger.yaml`, the daemon falls back to console-only logging — `shared/logs/app.log` and `errors.log` will be empty. Logs will only appear in `journalctl`.
+
 ---
 
 ## Phase 4: Install Components
@@ -894,6 +913,8 @@ After installation, verify:
 - [ ] Audio output working: `speaker-test -t wav -c 2 -l 1` produces sound
 
 ### Configuration
+- [ ] Logger config exists: `cat ~/RPi-Jukebox-RFID/shared/settings/logger.yaml`
+- [ ] Log files are being written: `ls -lh ~/RPi-Jukebox-RFID/shared/logs/` (app.log should be non-zero)
 - [ ] RFID config exists: `cat ~/RPi-Jukebox-RFID/shared/settings/rfid.yaml`
 - [ ] Jukebox config exists: `cat ~/RPi-Jukebox-RFID/shared/settings/jukebox.yaml`
 - [ ] Timers enabled in jukebox.yaml
