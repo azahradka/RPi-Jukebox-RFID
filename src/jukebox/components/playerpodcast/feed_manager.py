@@ -149,14 +149,16 @@ class PodcastFeedManager:
     def _extract_image_url(self, feed_data: Dict) -> str:
         """Extract podcast image URL from feed data"""
         # Try multiple possible locations for image
-        if hasattr(feed_data, 'image'):
-            if isinstance(feed_data.image, dict):
-                return feed_data.image.get('href', '')
+        if 'image' in feed_data:
+            image = feed_data['image']
+            if isinstance(image, dict):
+                return image.get('href', '')
 
         if 'itunes_image' in feed_data:
-            if isinstance(feed_data.itunes_image, dict):
-                return feed_data.itunes_image.get('href', '')
-            return feed_data.itunes_image
+            itunes_image = feed_data['itunes_image']
+            if isinstance(itunes_image, dict):
+                return itunes_image.get('href', '')
+            return itunes_image
 
         return ''
 
@@ -176,8 +178,8 @@ class PodcastFeedManager:
             audio_url = None
             duration = 0
 
-            if hasattr(entry, 'enclosures'):
-                for enclosure in entry.enclosures:
+            if 'enclosures' in entry:
+                for enclosure in entry['enclosures']:
                     if enclosure.get('type', '').startswith('audio/'):
                         audio_url = enclosure.get('href', enclosure.get('url'))
                         # Try to get duration from enclosure
@@ -189,8 +191,8 @@ class PodcastFeedManager:
                         break
 
             # Fallback to links if no enclosure found
-            if not audio_url and hasattr(entry, 'links'):
-                for link in entry.links:
+            if not audio_url and 'links' in entry:
+                for link in entry['links']:
                     if link.get('type', '').startswith('audio/'):
                         audio_url = link.get('href')
                         break
@@ -201,16 +203,18 @@ class PodcastFeedManager:
 
             # Parse publish date
             publish_date = None
-            if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                publish_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).isoformat()
-            elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-                publish_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc).isoformat()
+            published_parsed = entry.get('published_parsed')
+            updated_parsed = entry.get('updated_parsed')
+            if published_parsed:
+                publish_date = datetime(*published_parsed[:6], tzinfo=timezone.utc).isoformat()
+            elif updated_parsed:
+                publish_date = datetime(*updated_parsed[:6], tzinfo=timezone.utc).isoformat()
             else:
                 publish_date = datetime.now(timezone.utc).isoformat()
 
             # Extract duration from iTunes tags if not found in enclosure
             if duration == 0 and 'itunes_duration' in entry:
-                duration = self._parse_duration(entry.itunes_duration)
+                duration = self._parse_duration(entry.get('itunes_duration'))
 
             # Generate episode GUID
             episode_guid = entry.get('id', entry.get('guid', audio_url))

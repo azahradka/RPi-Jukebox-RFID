@@ -12,6 +12,8 @@ Handles:
 import logging
 import json
 import os
+import tempfile
+import shutil
 from typing import Dict, Optional, Any
 from datetime import datetime, timezone
 
@@ -73,12 +75,36 @@ class PodcastStateManager:
         self._save_state(self.state)
 
     def _save_state(self, state):
-        """Save podcast state to JSON file"""
+        """Save state atomically using write-temp-rename pattern"""
+        temp_path = None
         try:
-            with open(self.status_file, 'w') as f:
-                json.dump(state, f, indent=2)
+            # Write to temp file in same directory (ensures same filesystem)
+            status_dir = os.path.dirname(self.status_file)
+            os.makedirs(status_dir, exist_ok=True)
+
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                dir=status_dir,
+                delete=False,
+                suffix='.tmp'
+            ) as temp_file:
+                json.dump(state, temp_file, indent=2)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())  # Force write to disk
+                temp_path = temp_file.name
+
+            # Atomic rename (overwrites target atomically on POSIX)
+            shutil.move(temp_path, self.status_file)
+            logger.debug(f"State saved atomically to {self.status_file}")
+
         except Exception as e:
             logger.error(f"Failed to save podcast state: {e}")
+            # Clean up temp file if it exists
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
 
     def add_podcast(self, podcast_id: str, feed_url: str, title: str):
         """

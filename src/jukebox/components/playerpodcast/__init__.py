@@ -31,6 +31,7 @@ References:
 - https://developer.apple.com/library/archive/documentation/AudioVideo/Conceptual/iTuneSearchAPI/
 """
 
+import functools
 import logging
 import threading
 import time
@@ -50,6 +51,24 @@ from .episode_downloader import EpisodeDownloadManager
 
 logger = logging.getLogger('jb.PlayerPodcast')
 cfg = jukebox.cfghandler.get_handler('jukebox')
+
+
+def log_rpc_method(func):
+    """Decorator to log RPC method entry/exit with timing"""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        logger.info(f"RPC CALL: {func.__name__}(args={args[1:]}, kwargs={kwargs})")
+        start_time = time.time()
+        try:
+            result = func(*args, **kwargs)
+            elapsed = time.time() - start_time
+            logger.info(f"RPC DONE: {func.__name__} (took {elapsed:.2f}s)")
+            return result
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"RPC FAIL: {func.__name__} (took {elapsed:.2f}s): {e}", exc_info=True)
+            raise
+    return wrapper
 
 
 class PlayerPodcast:
@@ -146,20 +165,31 @@ class PlayerPodcast:
         """Background thread to track and save episode position"""
         while not self.position_thread_stop.is_set():
             try:
-                if self.playback_active and self.current_episode_guid:
-                    # Get current position from MPD
-                    mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
-                    if mpd_status and mpd_status.get('state') == 'play':
-                        elapsed = float(mpd_status.get('elapsed', 0))
-                        duration = float(mpd_status.get('duration', 0))
+                # Snapshot state under lock BEFORE external call
+                with self.lock:
+                    if not self.playback_active or not self.current_episode_guid:
+                        time.sleep(self.save_position_interval)
+                        continue
+                    episode_guid_snapshot = self.current_episode_guid
 
-                        # Save position
-                        with self.lock:
+                # Make external MPD call WITHOUT holding lock (avoid blocking main thread)
+                mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+
+                if mpd_status and mpd_status.get('state') == 'play':
+                    elapsed = float(mpd_status.get('elapsed', 0))
+                    duration = float(mpd_status.get('duration', 0))
+
+                    # Update state under lock
+                    with self.lock:
+                        # Verify episode hasn't changed during MPD call
+                        if episode_guid_snapshot == self.current_episode_guid:
                             self.state_manager.update_episode_position(
-                                self.current_episode_guid,
+                                episode_guid_snapshot,
                                 elapsed,
                                 duration
                             )
+                        else:
+                            logger.debug("Episode changed during position check, skipping save")
             except Exception as e:
                 logger.debug(f"Position tracking error: {e}")
 
@@ -286,6 +316,7 @@ class PlayerPodcast:
             return False
 
     @plugs.tag
+    @log_rpc_method
     def play_podcast_series(self, feed_url: str):  # noqa: C901
         """
         Play entire podcast series (newest to oldest, skip completed, auto-reset)
@@ -299,8 +330,14 @@ class PlayerPodcast:
             # Fetch feed
             feed_data = self.feed_manager.fetch_feed(feed_url)
             if not feed_data:
-                logger.error("Failed to fetch podcast feed")
-                return
+                error_msg = f"Failed to fetch podcast feed: {feed_url}"
+                logger.error(error_msg)
+                publishing.get_publisher().send('podcast.error', {
+                    'error': 'feed_fetch_failed',
+                    'feed_url': feed_url,
+                    'message': error_msg
+                })
+                raise ValueError(error_msg)
 
             podcast_id = feed_data['podcast_id']
             episodes = feed_data['episodes']
@@ -334,10 +371,10 @@ class PlayerPodcast:
                 return
 
             # Check for resume
-            logger.warning(f"[RESUME-DEBUG] Checking for resume: "
+            logger.debug(f"Checking for resume: "
                           f"playable_episodes={len(playable_episodes)}, was_reset={was_reset}")
             resume_info = self.queue_manager.find_resume_episode(playable_episodes)
-            logger.warning(f"[RESUME-DEBUG] resume_info={resume_info}")
+            logger.debug(f"resume_info={resume_info}")
             start_index = 0
             resume_position = 0
 
@@ -345,11 +382,11 @@ class PlayerPodcast:
                 resume_episode, resume_index = resume_info
                 start_index = resume_index
                 resume_position = self.state_manager.get_resume_position(resume_episode['guid'])
-                logger.warning(f"[RESUME-DEBUG] Found resume: episode_index={resume_index}, resume_position={resume_position}")
+                logger.info(f"Found resume: episode_index={resume_index}, resume_position={resume_position}")
                 logger.info(f"Resuming from episode {resume_index + 1}/{len(playable_episodes)} "
                            f"at {resume_position}s")
             else:
-                logger.warning(f"[RESUME-DEBUG] No resume: resume_info={resume_info}, was_reset={was_reset}")
+                logger.debug(f"No resume: resume_info={resume_info}, was_reset={was_reset}")
 
             # Play via MPD - start with the first (or resume) episode
             episode_to_play = playable_episodes[start_index]
@@ -367,6 +404,12 @@ class PlayerPodcast:
                     resume_position > self.resume_download_threshold or  # noqa: W504
                     self.episode_downloader.is_cached(episode_guid)
                 )
+                logger.info(f"Download decision: resume={resume_position}s, "
+                           f"threshold={self.resume_download_threshold}s, "
+                           f"already_cached={self.episode_downloader.is_cached(episode_guid)}, "
+                           f"will_download={should_download}")
+            else:
+                logger.info("Streaming from CDN (downloader disabled)")
 
             if should_download and self.episode_downloader:
                 try:
@@ -413,7 +456,18 @@ class PlayerPodcast:
 
             with self.lock:
                 # Use MPD's play_single method to play the episode URL
-                plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+                logger.info(f"Calling MPD play_single: {playback_url}")
+                result = plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+                logger.info(f"MPD play_single returned: {result}")
+                if result is None or (isinstance(result, dict) and result.get('error')):
+                    error_msg = f"MPD play_single failed for {playback_url}"
+                    logger.error(error_msg)
+                    publishing.get_publisher().send('podcast.error', {
+                        'error': 'mpd_playback_failed',
+                        'url': playback_url,
+                        'message': error_msg
+                    })
+                    raise RuntimeError(error_msg)
 
                 # TODO: Implement playlist queuing for multiple episodes
                 if len(playable_episodes) > 1:
@@ -437,16 +491,27 @@ class PlayerPodcast:
 
             # Attempt to seek to resume position
             if resume_position > 0:
+                # Wait for MPD to start playback
+                time.sleep(1.0)
                 try:
-                    # Wait for MPD to start playback
-                    time.sleep(1.0)
-                    plugs.call('player', 'ctrl', 'seek', args=(resume_position,))
                     if playback_url.startswith('http'):
-                        logger.debug("Seek attempted on stream (will fail silently)")
+                        logger.warning("Cannot seek on HTTP stream, resume will start from beginning")
+                        publishing.get_publisher().send('podcast.seek_unavailable', {
+                            'episode_guid': self.current_episode_guid,
+                            'resume_position': resume_position,
+                            'reason': 'HTTP streams not seekable'
+                        })
                     else:
-                        logger.info(f"Seeked to {resume_position}s in local file")
+                        logger.info(f"Seeking to resume position: {resume_position}s")
+                        result = plugs.call('player', 'ctrl', 'seek', args=(resume_position,))
+                        logger.info(f"Seek result: {result}")
                 except Exception as e:
-                    logger.debug(f"Seek failed: {e}")
+                    logger.error(f"Seek failed: {e}", exc_info=True)
+                    publishing.get_publisher().send('podcast.seek_failed', {
+                        'episode_guid': self.current_episode_guid,
+                        'resume_position': resume_position,
+                        'error': str(e)
+                    })
 
             logger.info(f"Started playback: {len(playable_episodes)} episodes, "
                        f"starting at index {start_index}")
@@ -455,6 +520,7 @@ class PlayerPodcast:
             logger.error(f"Play podcast series failed: {e}", exc_info=True)
 
     @plugs.tag
+    @log_rpc_method
     def play_podcast_episode(self, feed_url: str, episode_guid: str):  # noqa: C901
         """
         Play specific podcast episode with resume
@@ -463,12 +529,10 @@ class PlayerPodcast:
             feed_url: RSS feed URL
             episode_guid: Episode GUID
         """
-        logger.warning(f"[DEBUG] play_podcast_episode called with feed_url={feed_url}, episode_guid={episode_guid}")
         try:
             logger.info(f"Playing specific episode: {episode_guid}")
 
             # Fetch feed
-            logger.warning(f"[DEBUG] Fetching feed from {feed_url}")
             feed_data = self.feed_manager.fetch_feed(feed_url)
             if not feed_data:
                 logger.error("Failed to fetch podcast feed")
@@ -476,7 +540,7 @@ class PlayerPodcast:
 
             podcast_id = feed_data['podcast_id']
             episodes = feed_data['episodes']
-            logger.warning(f"[DEBUG] Got {len(episodes)} episodes from feed")
+            logger.debug(f"Got {len(episodes)} episodes from feed")
 
             # Store podcast metadata for status display
             self.current_podcast_metadata = {
@@ -494,7 +558,7 @@ class PlayerPodcast:
             # Store episode metadata for status display
             self.current_episode_metadata = episode
 
-            logger.warning(f"[DEBUG] Found episode: {episode['title']}, URL: {episode['url']}")
+            logger.info(f"Found episode: {episode['title']}, URL: {episode['url']}")
 
             # Get resume position
             resume_position = self.state_manager.get_resume_position(episode_guid)
@@ -511,6 +575,12 @@ class PlayerPodcast:
                     resume_position > self.resume_download_threshold or  # noqa: W504
                     self.episode_downloader.is_cached(episode_guid)
                 )
+                logger.info(f"Download decision: resume={resume_position}s, "
+                           f"threshold={self.resume_download_threshold}s, "
+                           f"already_cached={self.episode_downloader.is_cached(episode_guid)}, "
+                           f"will_download={should_download}")
+            else:
+                logger.info("Streaming from CDN (downloader disabled)")
 
             if should_download and self.episode_downloader:
                 try:
@@ -560,7 +630,6 @@ class PlayerPodcast:
             with self.lock:
                 # Use playermpd's play_single method to play the URL
                 plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
-                logger.warning("[DEBUG] play_single completed")
 
                 # Update state
                 self.current_podcast_id = podcast_id
@@ -572,16 +641,27 @@ class PlayerPodcast:
 
             # Attempt to seek to resume position
             if resume_position > 0:
+                # Wait for MPD to start playback
+                time.sleep(1.0)
                 try:
-                    # Wait for MPD to start playback
-                    time.sleep(1.0)
-                    plugs.call('player', 'ctrl', 'seek', args=(resume_position,))
                     if playback_url.startswith('http'):
-                        logger.debug("Seek attempted on stream (will fail silently)")
+                        logger.warning("Cannot seek on HTTP stream, resume will start from beginning")
+                        publishing.get_publisher().send('podcast.seek_unavailable', {
+                            'episode_guid': self.current_episode_guid,
+                            'resume_position': resume_position,
+                            'reason': 'HTTP streams not seekable'
+                        })
                     else:
-                        logger.info(f"Seeked to {resume_position}s in local file")
+                        logger.info(f"Seeking to resume position: {resume_position}s")
+                        result = plugs.call('player', 'ctrl', 'seek', args=(resume_position,))
+                        logger.info(f"Seek result: {result}")
                 except Exception as e:
-                    logger.debug(f"Seek failed: {e}")
+                    logger.error(f"Seek failed: {e}", exc_info=True)
+                    publishing.get_publisher().send('podcast.seek_failed', {
+                        'episode_guid': self.current_episode_guid,
+                        'resume_position': resume_position,
+                        'error': str(e)
+                    })
 
             logger.info(f"Finished playback start: {episode['title']}")
 
@@ -589,6 +669,7 @@ class PlayerPodcast:
             logger.error(f"Play podcast episode failed: {e}", exc_info=True)
 
     @plugs.tag
+    @log_rpc_method
     def play_card(self, uri: str):
         """
         Play podcast triggered by RFID card with second swipe detection
@@ -611,10 +692,10 @@ class PlayerPodcast:
 
             # Second swipe detection
             if last_uri == feed_url:
-                logger.info(f"Second swipe detected for: {feed_url}")
+                logger.info(f"Second swipe detected: {feed_url} → executing {self.second_swipe_action.__name__}")
                 self.second_swipe_action()
             else:
-                logger.info(f"First swipe: {feed_url}")
+                logger.info(f"First swipe: {feed_url} (specific_episode={is_specific_episode})")
                 if is_specific_episode:
                     self.play_podcast_episode(feed_url, episode_guid)
                 else:
@@ -839,15 +920,35 @@ class PlayerPodcast:
             return ''
 
     def exit(self):
-        """Cleanup on plugin shutdown"""
-        logger.info("Shutting down podcast player")
+        """Graceful shutdown - save state and stop threads"""
+        logger.info("Shutting down podcast player...")
+
+        # Stop background threads
         self.position_thread_stop.set()
         self.status_thread_stop.set()
 
+        # Wait for threads to finish (max 5 seconds)
         if self.position_thread.is_alive():
-            self.position_thread.join(timeout=2)
+            self.position_thread.join(timeout=5)
         if self.status_thread.is_alive():
-            self.status_thread.join(timeout=2)
+            self.status_thread.join(timeout=5)
+
+        # Final position save if playing
+        with self.lock:
+            if self.playback_active and self.current_episode_guid:
+                try:
+                    mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+                    if mpd_status:
+                        elapsed = float(mpd_status.get('elapsed', 0))
+                        duration = float(mpd_status.get('duration', 0))
+                        self.state_manager.update_episode_position(
+                            self.current_episode_guid,
+                            elapsed,
+                            duration
+                        )
+                        logger.info(f"Final position saved: {elapsed}s")
+                except Exception as e:
+                    logger.error(f"Final position save failed: {e}")
 
         # Save episode cache metadata
         if self.episode_downloader:
@@ -856,6 +957,8 @@ class PlayerPodcast:
                 logger.info("Episode cache metadata saved")
             except Exception as e:
                 logger.error(f"Failed to save cache metadata: {e}")
+
+        logger.info("Podcast player shutdown complete")
 
 
 # Global player instance

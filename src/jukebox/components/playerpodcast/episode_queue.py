@@ -100,7 +100,8 @@ class EpisodeQueueManager:
             # Filter to incomplete episodes only
             playable = self.filter_incomplete_episodes(sorted_episodes)
 
-        logger.info(f"Playable queue: {len(playable)} episodes (reset: {was_reset})")
+        logger.info(f"Playable queue: {len(playable)}/{len(sorted_episodes)} episodes "
+                   f"(filtered {len(sorted_episodes) - len(playable)} completed, reset: {was_reset})")
         return playable, was_reset
 
     def find_resume_episode(self, episodes: List[Dict[str, Any]]) -> Optional[Tuple[Dict[str, Any], int]]:

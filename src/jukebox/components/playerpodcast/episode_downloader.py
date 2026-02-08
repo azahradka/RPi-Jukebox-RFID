@@ -12,7 +12,9 @@ Handles:
 import logging
 import json
 import hashlib
+import os
 import shutil
+import tempfile
 import requests
 from pathlib import Path
 from typing import Dict, Optional, Any, Callable
@@ -82,13 +84,38 @@ class EpisodeDownloadManager:
         return metadata
 
     def save_metadata(self):
-        """Save cache metadata to JSON file"""
+        """Save cache metadata atomically using write-temp-rename pattern"""
+        temp_path = None
         try:
             self.metadata['max_cache_size_bytes'] = self.max_cache_size_bytes
-            with open(self.metadata_file, 'w') as f:
-                json.dump(self.metadata, f, indent=2)
+
+            # Write to temp file in same directory (ensures same filesystem)
+            metadata_dir = os.path.dirname(self.metadata_file)
+            os.makedirs(metadata_dir, exist_ok=True)
+
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                dir=metadata_dir,
+                delete=False,
+                suffix='.tmp'
+            ) as temp_file:
+                json.dump(self.metadata, temp_file, indent=2)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())  # Force write to disk
+                temp_path = temp_file.name
+
+            # Atomic rename (overwrites target atomically on POSIX)
+            shutil.move(temp_path, self.metadata_file)
+            logger.debug(f"Cache metadata saved atomically to {self.metadata_file}")
+
         except Exception as e:
             logger.error(f"Failed to save cache metadata: {e}")
+            # Clean up temp file if it exists
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
 
     def _cleanup_orphaned_files(self):
         """Remove files in cache directory that aren't in metadata"""
