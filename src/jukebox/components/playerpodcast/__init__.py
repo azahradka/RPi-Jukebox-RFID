@@ -154,11 +154,6 @@ class PlayerPodcast:
         self.position_thread_stop = threading.Event()
         self.position_thread.start()
 
-        # Start status publishing thread
-        self.status_thread = threading.Thread(target=self._status_publisher_loop, daemon=True)
-        self.status_thread_stop = threading.Event()
-        self.status_thread.start()
-
         logger.info("Podcast player initialized")
 
     def _position_tracking_loop(self):
@@ -168,9 +163,13 @@ class PlayerPodcast:
                 # Snapshot state under lock BEFORE external call
                 with self.lock:
                     if not self.playback_active or not self.current_episode_guid:
-                        time.sleep(self.save_position_interval)
-                        continue
-                    episode_guid_snapshot = self.current_episode_guid
+                        episode_guid_snapshot = None
+                    else:
+                        episode_guid_snapshot = self.current_episode_guid
+
+                if not episode_guid_snapshot:
+                    time.sleep(self.save_position_interval)
+                    continue
 
                 # Make external MPD call WITHOUT holding lock (avoid blocking main thread)
                 mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
@@ -194,17 +193,6 @@ class PlayerPodcast:
                 logger.debug(f"Position tracking error: {e}")
 
             time.sleep(self.save_position_interval)
-
-    def _status_publisher_loop(self):
-        """
-        Background thread - No longer publishes status directly.
-
-        MPD's status publisher now handles publishing and enriches with podcast
-        metadata by calling our playerstatus() method when playing podcast URLs.
-        This thread kept for potential future use.
-        """
-        while not self.status_thread_stop.is_set():
-            time.sleep(1)
 
     def _toggle_playback(self):
         """Toggle MPD playback state"""
@@ -315,6 +303,72 @@ class PlayerPodcast:
             logger.error(f"Feed refresh failed: {e}")
             return False
 
+    def _resolve_playback_url(self, episode: Dict[str, Any], resume_position: float) -> str:
+        """
+        Resolve playback URL, downloading episode to cache if needed for seeking.
+
+        Args:
+            episode: Episode metadata dictionary
+            resume_position: Current resume position in seconds
+
+        Returns:
+            Local file path if cached/downloaded, otherwise the original stream URL
+        """
+        episode_guid = episode['guid']
+        episode_url = episode['url']
+        podcast_title = (self.current_podcast_metadata or {}).get('title', 'Unknown Podcast')
+
+        if not self.episode_downloader:
+            logger.info("Streaming from CDN (downloader disabled)")
+            return episode_url
+
+        should_download = (
+            resume_position > self.resume_download_threshold  # noqa: W504
+            or self.episode_downloader.is_cached(episode_guid)
+        )
+        logger.info(f"Download decision: resume={resume_position}s, "
+                    f"threshold={self.resume_download_threshold}s, "
+                    f"already_cached={self.episode_downloader.is_cached(episode_guid)}, "
+                    f"will_download={should_download}")
+
+        if not should_download:
+            return episode_url
+
+        try:
+            local_path = self.episode_downloader.get_local_path(episode_guid)
+
+            if not local_path:
+                logger.info(f"Resume position {resume_position}s requires download")
+                publishing.get_publisher().send('podcast.download_started', {
+                    'episode_guid': episode_guid,
+                    'episode_title': episode['title'],
+                    'episode_url': episode_url
+                })
+                local_path = self.episode_downloader.download_episode(
+                    episode_url,
+                    episode_guid,
+                    episode_title=episode['title'],
+                    podcast_title=podcast_title
+                )
+                publishing.get_publisher().send('podcast.download_completed', {
+                    'episode_guid': episode_guid,
+                    'local_path': str(local_path)
+                })
+            else:
+                logger.info(f"Using cached episode: {local_path}")
+
+            if local_path and local_path.exists():
+                logger.info(f"Playing local file: {local_path}")
+                return str(local_path)
+        except Exception as e:
+            logger.warning(f"Download failed, falling back to stream: {e}")
+            publishing.get_publisher().send('podcast.download_failed', {
+                'episode_guid': episode_guid,
+                'error': str(e)
+            })
+
+        return episode_url
+
     @plugs.tag
     @log_rpc_method
     def play_podcast_series(self, feed_url: str):  # noqa: C901
@@ -392,67 +446,9 @@ class PlayerPodcast:
             episode_to_play = playable_episodes[start_index]
             logger.info(f"Playing episode at index {start_index}: {episode_to_play.get('title', 'Unknown')}")
 
-            # Determine playback source (stream vs local file)
-            playback_url = episode_to_play['url']  # Default: stream from CDN
-            podcast_title = self.current_podcast_metadata.get('title', 'Unknown Podcast')
+            # Resolve playback URL (cached local file or CDN stream)
             episode_guid = episode_to_play['guid']
-
-            # Check if download is needed (resume > threshold OR already cached)
-            should_download = False
-            if self.episode_downloader:
-                should_download = (
-                    resume_position > self.resume_download_threshold or  # noqa: W504
-                    self.episode_downloader.is_cached(episode_guid)
-                )
-                logger.info(f"Download decision: resume={resume_position}s, "
-                           f"threshold={self.resume_download_threshold}s, "
-                           f"already_cached={self.episode_downloader.is_cached(episode_guid)}, "
-                           f"will_download={should_download}")
-            else:
-                logger.info("Streaming from CDN (downloader disabled)")
-
-            if should_download and self.episode_downloader:
-                try:
-                    # Check if already cached
-                    local_path = self.episode_downloader.get_local_path(episode_guid)
-
-                    if not local_path:
-                        logger.info(f"Resume position {resume_position}s requires download")
-
-                        # Publish download start event
-                        publishing.get_publisher().send('podcast.download_started', {
-                            'episode_guid': episode_guid,
-                            'episode_title': episode_to_play['title'],
-                            'episode_url': episode_to_play['url']
-                        })
-
-                        # Synchronous download (blocking)
-                        local_path = self.episode_downloader.download_episode(
-                            episode_to_play['url'],
-                            episode_guid,
-                            episode_title=episode_to_play['title'],
-                            podcast_title=podcast_title
-                        )
-
-                        # Publish download complete event
-                        publishing.get_publisher().send('podcast.download_completed', {
-                            'episode_guid': episode_guid,
-                            'local_path': str(local_path)
-                        })
-                    else:
-                        logger.info(f"Using cached episode: {local_path}")
-
-                    if local_path and local_path.exists():
-                        playback_url = str(local_path)
-                        logger.info(f"Playing local file: {playback_url}")
-                except Exception as e:
-                    logger.warning(f"Download failed, falling back to stream: {e}")
-                    # Publish download failed event
-                    publishing.get_publisher().send('podcast.download_failed', {
-                        'episode_guid': episode_guid,
-                        'error': str(e)
-                    })
-                    # Fallback to streaming (use original episode URL)
+            playback_url = self._resolve_playback_url(episode_to_play, resume_position)
 
             with self.lock:
                 # Use MPD's play_single method to play the episode URL
@@ -564,66 +560,8 @@ class PlayerPodcast:
             resume_position = self.state_manager.get_resume_position(episode_guid)
             logger.info(f"Resume position: {resume_position}s")
 
-            # Determine playback source (stream vs local file)
-            playback_url = episode['url']  # Default: stream from CDN
-            podcast_title = self.current_podcast_metadata.get('title', 'Unknown Podcast')
-
-            # Check if download is needed (resume > threshold OR already cached)
-            should_download = False
-            if self.episode_downloader:
-                should_download = (
-                    resume_position > self.resume_download_threshold or  # noqa: W504
-                    self.episode_downloader.is_cached(episode_guid)
-                )
-                logger.info(f"Download decision: resume={resume_position}s, "
-                           f"threshold={self.resume_download_threshold}s, "
-                           f"already_cached={self.episode_downloader.is_cached(episode_guid)}, "
-                           f"will_download={should_download}")
-            else:
-                logger.info("Streaming from CDN (downloader disabled)")
-
-            if should_download and self.episode_downloader:
-                try:
-                    # Check if already cached
-                    local_path = self.episode_downloader.get_local_path(episode_guid)
-
-                    if not local_path:
-                        logger.info(f"Resume position {resume_position}s requires download")
-
-                        # Publish download start event
-                        publishing.get_publisher().send('podcast.download_started', {
-                            'episode_guid': episode_guid,
-                            'episode_title': episode['title'],
-                            'episode_url': episode['url']
-                        })
-
-                        # Synchronous download (blocking)
-                        local_path = self.episode_downloader.download_episode(
-                            episode['url'],
-                            episode_guid,
-                            episode_title=episode['title'],
-                            podcast_title=podcast_title
-                        )
-
-                        # Publish download complete event
-                        publishing.get_publisher().send('podcast.download_completed', {
-                            'episode_guid': episode_guid,
-                            'local_path': str(local_path)
-                        })
-                    else:
-                        logger.info(f"Using cached episode: {local_path}")
-
-                    if local_path and local_path.exists():
-                        playback_url = str(local_path)
-                        logger.info(f"Playing local file: {playback_url}")
-                except Exception as e:
-                    logger.warning(f"Download failed, falling back to stream: {e}")
-                    # Publish download failed event
-                    publishing.get_publisher().send('podcast.download_failed', {
-                        'episode_guid': episode_guid,
-                        'error': str(e)
-                    })
-                    # Fallback to streaming (use original episode['url'])
+            # Resolve playback URL (cached local file or CDN stream)
+            playback_url = self._resolve_playback_url(episode, resume_position)
 
             # Play via MPD
             logger.info(f"Playing episode: {episode['title']}")
@@ -713,11 +651,17 @@ class PlayerPodcast:
             Dictionary with playback state compatible with Web UI Player component
         """
         try:
-            # Get base MPD status
+            # Get base MPD status (no lock needed - MPD has its own thread safety)
             mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
 
-            if not mpd_status or not self.playback_active:
-                # Return minimal status when not playing
+            # Snapshot shared state under lock to avoid torn reads
+            with self.lock:
+                is_active = self.playback_active
+                episode_meta = self.current_episode_metadata
+                podcast_meta = self.current_podcast_metadata
+                episode_guid = self.current_episode_guid
+
+            if not mpd_status or not is_active:
                 return {
                     'state': 'stop',
                     'elapsed': 0,
@@ -726,7 +670,6 @@ class PlayerPodcast:
 
             # Build Web UI-compatible status
             status = {
-                # Playback state from MPD
                 'state': mpd_status.get('state', 'stop'),
                 'elapsed': float(mpd_status.get('elapsed', 0)),
                 'duration': float(mpd_status.get('duration', 0)),
@@ -735,15 +678,14 @@ class PlayerPodcast:
                 'single': mpd_status.get('single', '0'),
             }
 
-            # Add podcast metadata if available
-            if self.current_episode_metadata and self.current_podcast_metadata:
+            if episode_meta and podcast_meta:
                 status.update({
-                    'songid': self.current_episode_guid,  # For UI existence check
-                    'title': self.current_episode_metadata.get('title', 'Unknown Episode'),
-                    'artist': self.current_podcast_metadata.get('author', 'Unknown Podcast'),
-                    'album': self.current_podcast_metadata.get('title', 'Unknown Podcast'),
-                    'file': self.current_episode_metadata.get('url', ''),  # Audio URL for reference
-                    'coverart_url': self.current_podcast_metadata.get('image_url', ''),  # Podcast artwork URL
+                    'songid': episode_guid,
+                    'title': episode_meta.get('title', 'Unknown Episode'),
+                    'artist': podcast_meta.get('author', 'Unknown Podcast'),
+                    'album': podcast_meta.get('title', 'Unknown Podcast'),
+                    'file': episode_meta.get('url', ''),
+                    'coverart_url': podcast_meta.get('image_url', ''),
                 })
 
             return status
@@ -923,15 +865,12 @@ class PlayerPodcast:
         """Graceful shutdown - save state and stop threads"""
         logger.info("Shutting down podcast player...")
 
-        # Stop background threads
+        # Stop background thread
         self.position_thread_stop.set()
-        self.status_thread_stop.set()
 
-        # Wait for threads to finish (max 5 seconds)
+        # Wait for thread to finish (max 5 seconds)
         if self.position_thread.is_alive():
             self.position_thread.join(timeout=5)
-        if self.status_thread.is_alive():
-            self.status_thread.join(timeout=5)
 
         # Final position save if playing
         with self.lock:

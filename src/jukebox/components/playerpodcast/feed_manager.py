@@ -103,8 +103,9 @@ class PodcastFeedManager:
 
         logger.info(f"Fetching feed: {feed_url}")
         try:
-            # Parse RSS feed
-            feed = feedparser.parse(feed_url)
+            response = requests.get(feed_url, timeout=30)
+            response.raise_for_status()
+            feed = feedparser.parse(response.content)
 
             if feed.bozo:
                 logger.warning(f"Feed parsing warning for {feed_url}: {feed.bozo_exception}")

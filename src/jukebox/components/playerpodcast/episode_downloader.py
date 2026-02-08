@@ -202,9 +202,8 @@ class EpisodeDownloadManager:
         if ep_hash in self.metadata.get('episodes', {}):
             file_path = self.cache_path / self.metadata['episodes'][ep_hash]['file_path']
             if file_path.exists():
-                # Update last accessed time
+                # Update last accessed time in memory (persisted on eviction/shutdown)
                 self.metadata['episodes'][ep_hash]['last_accessed'] = datetime.now(timezone.utc).isoformat()
-                self.save_metadata()
                 return file_path.resolve()
         return None
 
@@ -244,7 +243,7 @@ class EpisodeDownloadManager:
 
         try:
             # Start download with streaming
-            response = requests.get(episode_url, stream=True, timeout=10)
+            response = requests.get(episode_url, stream=True, timeout=(10, self.download_timeout))
             response.raise_for_status()
 
             # Get file extension
