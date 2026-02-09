@@ -635,9 +635,12 @@ aplay -l
 # Should show: snd_rpi_hifiberry_dac or similar
 ```
 
-#### Step 3: Configure MPD for Direct I2S Output
+#### Step 3: Configure MPD Audio Output (PulseAudio)
 
-Configure MPD to use the HiFiBerry DAC directly for optimal audio quality:
+**IMPORTANT:** MPD must output through PulseAudio, not directly to ALSA. The jukebox
+uses PulseAudio for volume control and the startup jingle. If MPD uses direct ALSA
+(`hw:0,0`), it will conflict with PulseAudio — only one program can hold the ALSA
+device at a time, causing "Device or resource busy" errors.
 
 ```bash
 # Stop services
@@ -647,15 +650,14 @@ systemctl --user stop mpd
 # Backup MPD config
 cp ~/.config/mpd/mpd.conf ~/.config/mpd/mpd.conf.backup
 
-# Configure direct ALSA output to HiFiBerry DAC
+# Configure PulseAudio output for MPD
 cat >> ~/.config/mpd/mpd.conf << 'EOF'
 
-# Direct ALSA output to HifiBerry DAC for optimal audio quality
+# PulseAudio output - routes through PulseAudio so volume control,
+# startup jingle, and MPD can all share the audio device
 audio_output {
-    type            "alsa"
-    name            "HifiBerry DAC"
-    device          "hw:0,0"          # Direct hardware access to card 0
-    mixer_type      "software"        # HifiBerry DAC has no hardware mixer
+    type            "pulse"
+    name            "PulseAudio Output"
 }
 EOF
 
@@ -665,14 +667,11 @@ systemctl --user start jukebox-daemon
 
 # Verify MPD output is configured
 mpc outputs
-# Should show: HifiBerry DAC (enabled)
+# Should show: PulseAudio Output (enabled)
 ```
 
 **Test audio output:**
 ```bash
-# Test direct hardware access
-speaker-test -c 2 -t wav -D hw:0,0 -l 1
-
 # Test through MPD
 mpc clear
 mpc add http://stream.radioparadise.com/mp3-128
@@ -680,9 +679,19 @@ mpc volume 60
 mpc play
 ```
 
-**Audio Quality Notes:**
-- Direct ALSA output provides better sound quality than routing through PulseAudio
-- Software mixer allows volume control via MPD/jukebox
+**If audio is very quiet**, the intermediate PulseAudio sinks may have low default
+volumes. Only the `phoniebox_speaker` sink should control volume — set the filter
+sinks to 100% passthrough:
+```bash
+pactl set-sink-volume alsa_output.platform-soc_sound.stereo-fallback 100%
+pactl set-sink-volume eq_main 100%
+# These settings are saved by module-device-restore and persist across reboots
+```
+
+**Why PulseAudio instead of direct ALSA?**
+- PulseAudio already holds the ALSA device for volume control and the startup jingle
+- ALSA `hw:0,0` only allows one program at a time — MPD and PulseAudio can't share it
+- Routing MPD through PulseAudio eliminates "Device or resource busy" errors
 - Volume normalization is disabled to preserve dynamic range
 
 ### 5.3 Configure Timers and Battery Monitor

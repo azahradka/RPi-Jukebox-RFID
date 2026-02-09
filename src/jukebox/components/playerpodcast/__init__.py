@@ -33,6 +33,7 @@ References:
 
 import functools
 import logging
+import os
 import threading
 import time
 import hashlib
@@ -43,6 +44,7 @@ from typing import Optional, Dict, Any, List
 import jukebox.cfghandler
 import jukebox.plugs as plugs
 import jukebox.publishing as publishing
+import components.player
 
 from .feed_manager import PodcastFeedManager
 from .episode_queue import EpisodeQueueManager
@@ -128,6 +130,13 @@ class PlayerPodcast:
             self.episode_downloader = None
             logger.info("Episode cache disabled")
 
+        # MPD symlink name for podcast cache inside music library
+        self.mpd_podcast_subdir = 'podcast-cache'
+
+        # Create symlink from MPD's music directory to episode cache
+        # so MPD can access local files via relative paths
+        self._setup_mpd_symlink(episode_cache_path)
+
         # Playback state
         self.current_podcast_id = None
         self.current_episode_guid = None
@@ -155,6 +164,50 @@ class PlayerPodcast:
         self.position_thread.start()
 
         logger.info("Podcast player initialized")
+
+    def _setup_mpd_symlink(self, episode_cache_path):
+        """Create symlink from MPD's music directory to episode cache.
+
+        MPD does not allow local file access via TCP connections. By symlinking
+        the episode cache into MPD's music_directory, we can use relative paths
+        (e.g. 'podcast-cache/ep_xxx.mp3') that MPD accepts via addid."""
+        try:
+            music_lib = components.player.get_music_library_path()
+            if not music_lib:
+                logger.warning("Could not determine MPD music library path, "
+                               "local episode playback may fail")
+                return
+
+            music_lib_path = Path(os.path.expanduser(music_lib))
+            symlink_path = music_lib_path / self.mpd_podcast_subdir
+            cache_target = Path(episode_cache_path).resolve()
+
+            if symlink_path.is_symlink():
+                if symlink_path.resolve() == cache_target:
+                    logger.debug(f"MPD symlink already correct: {symlink_path} -> {cache_target}")
+                    return
+                # Symlink points somewhere else, remove and recreate
+                symlink_path.unlink()
+            elif symlink_path.exists():
+                # A regular directory exists (not a symlink) - leave it alone
+                logger.warning(f"MPD podcast path exists but is not a symlink: {symlink_path}")
+                return
+
+            symlink_path.symlink_to(cache_target)
+            logger.info(f"Created MPD symlink: {symlink_path} -> {cache_target}")
+        except Exception as e:
+            logger.warning(f"Failed to create MPD symlink: {e}")
+
+    def _to_mpd_uri(self, local_path):
+        """Convert an absolute local file path to an MPD-relative URI.
+
+        Args:
+            local_path: Absolute path to a file in the episode cache
+
+        Returns:
+            MPD-relative path like 'podcast-cache/filename.mp3'
+        """
+        return f"{self.mpd_podcast_subdir}/{Path(local_path).name}"
 
     def _position_tracking_loop(self):
         """Background thread to track and save episode position"""
@@ -307,12 +360,16 @@ class PlayerPodcast:
         """
         Resolve playback URL, downloading episode to cache if needed for seeking.
 
+        For cached/downloaded episodes, returns an MPD-relative path
+        (e.g. 'podcast-cache/ep_xxx.mp3') so MPD can access local files
+        via its music_directory. For uncached episodes, returns the HTTP URL.
+
         Args:
             episode: Episode metadata dictionary
             resume_position: Current resume position in seconds
 
         Returns:
-            Local file path if cached/downloaded, otherwise the original stream URL
+            MPD-relative path if cached/downloaded, otherwise the original stream URL
         """
         episode_guid = episode['guid']
         episode_url = episode['url']
@@ -336,6 +393,7 @@ class PlayerPodcast:
 
         try:
             local_path = self.episode_downloader.get_local_path(episode_guid)
+            needs_mpd_update = False
 
             if not local_path:
                 logger.info(f"Resume position {resume_position}s requires download")
@@ -354,12 +412,16 @@ class PlayerPodcast:
                     'episode_guid': episode_guid,
                     'local_path': str(local_path)
                 })
+                needs_mpd_update = True
             else:
                 logger.info(f"Using cached episode: {local_path}")
 
             if local_path and local_path.exists():
-                logger.info(f"Playing local file: {local_path}")
-                return str(local_path)
+                mpd_uri = self._to_mpd_uri(local_path)
+                if needs_mpd_update:
+                    self._update_mpd_database()
+                logger.info(f"Playing via MPD URI: {mpd_uri}")
+                return mpd_uri
         except Exception as e:
             logger.warning(f"Download failed, falling back to stream: {e}")
             publishing.get_publisher().send('podcast.download_failed', {
@@ -368,6 +430,15 @@ class PlayerPodcast:
             })
 
         return episode_url
+
+    def _update_mpd_database(self):
+        """Trigger MPD database update and wait for it to complete,
+        so newly downloaded episodes are indexed before playback."""
+        try:
+            plugs.call('player', 'ctrl', 'update_wait')
+            logger.info("MPD database update completed for new episode")
+        except Exception as e:
+            logger.warning(f"MPD database update failed: {e}")
 
     @plugs.tag
     @log_rpc_method
@@ -380,6 +451,26 @@ class PlayerPodcast:
         """
         try:
             logger.info(f"Playing podcast series: {feed_url}")
+
+            # If this podcast is already the current one, handle re-trigger
+            # (e.g. place_not_swipe mode where card stays on reader)
+            with self.lock:
+                if self.playback_active and self.current_feed_url == feed_url:
+                    try:
+                        mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+                        mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
+                    except Exception:
+                        mpd_state = 'stop'
+
+                    if mpd_state == 'play':
+                        # Already playing this podcast - no-op
+                        logger.info("Podcast already playing, ignoring re-trigger")
+                        return
+                    elif mpd_state == 'pause':
+                        # Paused (card removed & placed back) - resume
+                        logger.info("Podcast paused, resuming playback")
+                        plugs.call('player', 'ctrl', 'pause', args=(0,))
+                        return
 
             # Fetch feed
             feed_data = self.feed_manager.fetch_feed(feed_url)
@@ -452,18 +543,10 @@ class PlayerPodcast:
 
             with self.lock:
                 # Use MPD's play_single method to play the episode URL
+                # play_single raises an exception on failure; no return value on success
                 logger.info(f"Calling MPD play_single: {playback_url}")
-                result = plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
-                logger.info(f"MPD play_single returned: {result}")
-                if result is None or (isinstance(result, dict) and result.get('error')):
-                    error_msg = f"MPD play_single failed for {playback_url}"
-                    logger.error(error_msg)
-                    publishing.get_publisher().send('podcast.error', {
-                        'error': 'mpd_playback_failed',
-                        'url': playback_url,
-                        'message': error_msg
-                    })
-                    raise RuntimeError(error_msg)
+                plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+                logger.info("MPD play_single succeeded")
 
                 # TODO: Implement playlist queuing for multiple episodes
                 if len(playable_episodes) > 1:
@@ -527,6 +610,24 @@ class PlayerPodcast:
         """
         try:
             logger.info(f"Playing specific episode: {episode_guid}")
+
+            # If this episode is already the current one, handle re-trigger
+            with self.lock:
+                if (self.playback_active and self.current_feed_url == feed_url
+                        and self.current_episode_guid == episode_guid):
+                    try:
+                        mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+                        mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
+                    except Exception:
+                        mpd_state = 'stop'
+
+                    if mpd_state == 'play':
+                        logger.info("Episode already playing, ignoring re-trigger")
+                        return
+                    elif mpd_state == 'pause':
+                        logger.info("Episode paused, resuming playback")
+                        plugs.call('player', 'ctrl', 'pause', args=(0,))
+                        return
 
             # Fetch feed
             feed_data = self.feed_manager.fetch_feed(feed_url)

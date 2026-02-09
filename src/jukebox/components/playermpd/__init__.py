@@ -634,7 +634,7 @@ class PlayerMPD:
             # Delegate to podcast player for podcast cover art
             try:
                 logger.info(f"Delegating coverart request for podcast URL: {song_url}")
-                result = plugs.call('player_podcast', 'ctrl', 'get_coverart', song_url)
+                result = plugs.call('player_podcast', 'ctrl', 'get_coverart', args=(song_url,))
                 logger.info(f"Podcast coverart result: {result}")
                 return result
             except Exception as e:
