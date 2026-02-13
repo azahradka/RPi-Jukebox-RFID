@@ -15,6 +15,10 @@ const SUBSCRIPTIONS = [
   'playerstatus',
   'rfid.card_id',
   'volume.level',
+  'podcast.download_started',
+  'podcast.download_progress',
+  'podcast.download_completed',
+  'podcast.download_failed',
 ];
 
 const ROOT_DIR = './';
@@ -74,6 +78,14 @@ const JUKEBOX_ACTIONS_MAP = {
     commands: {
       sync_rfidcards_all: {},
       sync_rfidcards_change_on_rfid_scan: {},
+    }
+  },
+
+  // Podcasts
+  play_podcast: {
+    commands: {
+      play_podcast_series: {},
+      play_podcast_episode: {},
     }
   },
 }

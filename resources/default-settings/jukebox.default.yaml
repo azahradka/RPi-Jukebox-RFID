@@ -13,6 +13,7 @@ modules:
     jingle.jinglemp3: jingle.jinglemp3
     player: playermpd
     player_spotify: playerspotify
+    player_podcast: playerpodcast
     cards: rfid.cards
     rfid: rfid.reader
     timers: timers
@@ -66,6 +67,7 @@ jingle:
   # startup_sound: ../../resources/audio/startupsound.mp3
   # Shutdown sound is not played on Ctrl-C (to reduce developer's stain)
   shutdown_sound: ../../resources/audio/shutdownsound.wav
+  waiting_sound: ../../resources/audio/waitingsound.wav
   # Use file ending to choose player from available jingle services
   service: auto
   # The playback volume of the jingles. (Comment out means use current system volume)
@@ -121,6 +123,37 @@ playerspotify:
   # Content caching configuration
   cache_enabled: true
   cache_path: ../../shared/cache/spotify/
+playerpodcast:
+  # Podcast Player Plugin Configuration
+  # Uses iTunes Search API for podcast discovery and RSS feeds for playback
+  # No authentication required - works out of the box
+  enabled: true
+  status_file: ../../shared/settings/podcast_player_status.json
+  # Feed cache configuration
+  feed_cache_ttl: 3600  # Cache duration in seconds (1 hour)
+  feed_cache_path: ../../shared/cache/podcasts/
+  # Position saving interval while playing
+  save_position_interval: 10  # Save position every N seconds
+  # Episode completion threshold (0.0-1.0)
+  completion_threshold: 0.9  # 90% played = completed
+  # Episode ordering (newest_first or oldest_first)
+  episode_order: newest_first
+  # Second swipe action when same card is swiped again
+  second_swipe_action:
+    # Must be one of: 'toggle', 'next_episode', 'none'
+    alias: toggle
+  # iTunes Search API configuration
+  itunes_api:
+    enabled: true
+    search_limit: 20  # Maximum search results
+  # Episode download cache settings
+  episode_cache:
+    enabled: true
+    cache_path: ../../shared/cache/podcasts/episodes/
+    max_cache_size_mb: 2048  # 2GB cache for ~40-100 episodes
+    download_timeout: 300  # 5 minutes max download time
+    cleanup_on_startup: true
+    min_free_space_mb: 500  # Stop downloading if disk space < 500MB
 rpc:
   tcp_port: 5555
   websocket_port: 5556

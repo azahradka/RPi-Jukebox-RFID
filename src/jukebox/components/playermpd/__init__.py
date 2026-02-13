@@ -87,6 +87,7 @@ import threading
 import logging
 import time
 import functools
+import json
 from pathlib import Path
 import components.player
 import jukebox.cfghandler
@@ -97,7 +98,6 @@ import jukebox.publishing as publishing
 import jukebox.playlistgenerator as playlistgenerator
 import misc
 
-from jukebox.NvManager import nv_manager
 from .playcontentcallback import PlayContentCallbacks, PlayCardState
 from .coverart_cache_manager import CoverartCacheManager
 
@@ -143,9 +143,9 @@ class PlayerMPD:
     """Interface to MPD Music Player Daemon"""
 
     def __init__(self):
-        self.nvm = nv_manager()
         self.mpd_host = cfg.getn('playermpd', 'host')
-        self.music_player_status = self.nvm.load(cfg.getn('playermpd', 'status_file'))
+        self.status_file = cfg.getn('playermpd', 'status_file')
+        self.music_player_status = self._load_state()
 
         self.second_swipe_action_dict = {'toggle': self.toggle,
                                          'play': self.play,
@@ -197,7 +197,7 @@ class PlayerMPD:
         if not self.music_player_status:
             self.music_player_status['player_status'] = {}
             self.music_player_status['audio_folder_status'] = {}
-            self.music_player_status.save_to_json()
+            self._save_state()
             self.current_folder_status = {}
             self.music_player_status['player_status']['last_played_folder'] = ''
         else:
@@ -229,12 +229,31 @@ class PlayerMPD:
                                                                  self.mpd_status_poll_interval, self._mpd_status_poll)
         self.status_thread.start()
 
+    def _load_state(self):
+        """Load player status from JSON file"""
+        if os.path.exists(self.status_file):
+            try:
+                with open(self.status_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load player status: {e}")
+                return {}
+        return {}
+
+    def _save_state(self):
+        """Save player status to JSON file"""
+        try:
+            with open(self.status_file, 'w') as f:
+                json.dump(self.music_player_status, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save player status: {e}")
+
     def exit(self):
         logger.debug("Exit routine of playermpd started")
         self.status_is_closing = True
         self.status_thread.cancel()
         self.mpd_client.disconnect()
-        self.nvm.save_all()
+        self._save_state()
         return self.status_thread.timer_thread
 
     def connect(self):
@@ -301,6 +320,25 @@ class PlayerMPD:
             del self.mpd_status['volume']
         except KeyError:
             pass
+
+        # Check if playing a podcast (URL) and enrich with podcast metadata
+        current_file = self.mpd_status.get('file', '')
+        if current_file and (current_file.startswith('http://') or current_file.startswith('https://')):
+            # Try to get podcast metadata if podcast player is active
+            try:
+                podcast_status = plugs.call('player_podcast', 'ctrl', 'playerstatus')
+                if podcast_status and podcast_status.get('title'):
+                    # Enrich MPD status with podcast metadata
+                    self.mpd_status.update({
+                        'title': podcast_status.get('title'),
+                        'artist': podcast_status.get('artist'),
+                        'album': podcast_status.get('album'),
+                        'songid': podcast_status.get('songid'),
+                        'coverart_url': podcast_status.get('coverart_url')
+                    })
+            except Exception:
+                pass  # Podcast player not active or not available
+
         publishing.get_publisher().send('playerstatus', self.mpd_status)
 
     # MPD can play absolute paths but can find songs in its database only by relative path
@@ -349,9 +387,22 @@ class PlayerMPD:
         with self.mpd_lock:
             self.mpd_client.pause(state)
 
+    def _is_podcast_active(self):
+        """Check if the podcast player is currently driving playback.
+
+        Returns False if the podcast plugin is not loaded or not active."""
+        try:
+            return plugs.call('player_podcast', 'ctrl', 'is_podcast_active')
+        except Exception:
+            return False
+
     @plugs.tag
     def prev(self):
         logger.debug("Prev")
+        # Delegate to podcast player if it is driving playback
+        if self._is_podcast_active():
+            logger.debug('Podcast active, delegating prev to podcast player')
+            return plugs.call('player_podcast', 'ctrl', 'prev')
         if self.mpd_status['state'] == 'stop':
             logger.debug('Player is stopped, calling stopped_prev_action')
             return self.stopped_prev_action()
@@ -371,6 +422,10 @@ class PlayerMPD:
     def next(self):
         """Play next track in current playlist"""
         logger.debug("Next")
+        # Delegate to podcast player if it is driving playback
+        if self._is_podcast_active():
+            logger.debug('Podcast active, delegating next to podcast player')
+            return plugs.call('player_podcast', 'ctrl', 'next')
         if self.mpd_status['state'] == 'stop':
             logger.debug('Player is stopped, calling stopped_next_action')
             return self.stopped_next_action()
@@ -398,7 +453,19 @@ class PlayerMPD:
     @plugs.tag
     def seek(self, new_time):
         with self.mpd_lock:
-            self.mpd_client.seekcur(new_time)
+            # Try using seek(songpos, time) first - works better for HTTP streams
+            # If that fails, fall back to seekcur
+            try:
+                status = self.mpd_client.status()
+                songpos = int(status.get('song', 0))
+                logger.info(f"[SEEK-DEBUG] Attempting seek to position {songpos}, time {new_time}")
+                self.mpd_client.seek(songpos, new_time)
+                logger.info(f"[SEEK-DEBUG] Seek successful using seek(songpos, time)")
+            except Exception as e:
+                # Fallback to seekcur for compatibility
+                logger.warning(f"[SEEK-DEBUG] seek(songpos, time) failed: {e}, trying seekcur")
+                self.mpd_client.seekcur(new_time)
+                logger.info(f"[SEEK-DEBUG] Seek successful using seekcur")
 
     @plugs.tag
     def rewind(self):
@@ -579,6 +646,19 @@ class PlayerMPD:
 
     @plugs.tag
     def get_single_coverart(self, song_url):
+        # Check if this is a podcast URL (http/https)
+        if song_url and (song_url.startswith('http://') or song_url.startswith('https://')):
+            # Delegate to podcast player for podcast cover art
+            try:
+                logger.info(f"Delegating coverart request for podcast URL: {song_url}")
+                result = plugs.call('player_podcast', 'ctrl', 'get_coverart', args=(song_url,))
+                logger.info(f"Podcast coverart result: {result}")
+                return result
+            except Exception as e:
+                logger.error(f"Failed to get podcast coverart: {e}", exc_info=True)
+                return ''  # Podcast player not available or no cover art
+
+        # Handle local files normally
         mp3_file_path = Path(components.player.get_music_library_path(), song_url).expanduser()
         cache_filename = self.coverart_cache_manager.get_cache_filename(mp3_file_path)
 
@@ -645,6 +725,7 @@ class PlayerMPD:
                 self.current_folder_status = self.music_player_status['audio_folder_status'][folder] = {}
 
             self.mpd_client.play()
+            self._save_state()
 
     @plugs.tag
     def play_album(self, albumartist: str, album: str):

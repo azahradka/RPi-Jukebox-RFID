@@ -1,0 +1,210 @@
+# Podcast Card Configuration Examples
+#
+# This file shows how to configure RFID cards for podcast playback.
+# Copy these examples to your shared/settings/cards.yaml file and modify as needed.
+#
+# Prerequisites:
+# 1. Enable playerpodcast in jukebox.yaml modules.named section
+# 2. Install feedparser: pip install feedparser>=6.0.10
+# 3. Ensure MPD (playermpd) is running
+#
+# Podcast URIs can be:
+# - Full podcast series: Just the RSS feed URL
+# - Specific episode: feed_url::episode_guid format
+#
+# Episode Behavior:
+# - Episodes play newest to oldest
+# - Completed episodes (>90% played) are skipped
+# - When all episodes completed, auto-resets and restarts from newest
+# - Playback resumes from saved position
+#
+# Second Swipe:
+# - Default: Pause/play toggle (configurable in jukebox.yaml)
+# - Alternative: Next episode
+
+# ============================================================================
+# PODCAST SERIES EXAMPLES
+# Play entire podcast feed (all unplayed episodes, newest first)
+# ============================================================================
+
+# Example 1: Popular podcast - Serial
+card_podcast_serial:
+  alias: play_podcast_series
+  args:
+    - "http://feeds.serialpodcast.org/serialpodcast"
+
+# Example 2: NPR Podcast - The Daily
+card_podcast_thedaily:
+  alias: play_podcast_series
+  args:
+    - "https://feeds.simplecast.com/54nAGcIl"
+
+# Example 3: Kids podcast - Wow in the World
+card_podcast_wow:
+  alias: play_podcast_series
+  args:
+    - "https://feeds.megaphone.fm/HSW4286072308"
+
+# Example 4: Story podcast - Welcome to Night Vale
+card_podcast_nightvale:
+  alias: play_podcast_series
+  args:
+    - "http://feeds.nightvalepresents.com/welcometonightvalepodcast"
+
+# Example 5: Educational - Science Vs
+card_podcast_sciencevs:
+  alias: play_podcast_series
+  args:
+    - "https://feeds.gimletmedia.com/sciencevs"
+
+# ============================================================================
+# SPECIFIC EPISODE EXAMPLES
+# Play single episode from a podcast
+# ============================================================================
+
+# Example 6: Specific episode
+# Format: feed_url::episode_guid
+# Note: Episode GUID can be found by calling get_podcast_episodes RPC command
+card_podcast_episode_001:
+  alias: play_podcast_episode
+  args:
+    - "http://feeds.serialpodcast.org/serialpodcast"
+    - "http://feed.thisamericanlife.org/talpodcast/534.mp3"  # Example GUID
+
+# ============================================================================
+# PRIVATE/UNLISTED PODCASTS
+# For podcasts not in iTunes directory
+# ============================================================================
+
+# Example 7: Private podcast (direct RSS URL)
+card_podcast_private:
+  alias: play_podcast_series
+  args:
+    - "https://example.com/myprivate/feed.xml"
+
+# ============================================================================
+# USING play_podcast_card ALIAS (with second swipe detection)
+# ============================================================================
+
+# Example 8: Using play_podcast_card for automatic second swipe handling
+card_podcast_with_swipe:
+  alias: play_podcast_card
+  args:
+    - "http://feeds.serialpodcast.org/serialpodcast"
+
+# ============================================================================
+# PODCAST CONTROL CARDS
+# Utility cards for controlling podcast playback
+# ============================================================================
+
+# Pause/Resume current podcast
+card_podcast_toggle:
+  alias: podcast_toggle
+
+# Skip to next episode
+card_podcast_next:
+  alias: podcast_next
+
+# Go to previous episode
+card_podcast_prev:
+  alias: podcast_prev
+
+# Force refresh feed (bypass cache)
+card_podcast_refresh:
+  alias: refresh_podcast_feed
+  args:
+    - "http://feeds.serialpodcast.org/serialpodcast"
+
+# ============================================================================
+# ADVANCED EXAMPLES
+# ============================================================================
+
+# Example 9: Multiple podcasts on different cards
+card_kids_story_1:
+  alias: play_podcast_series
+  args:
+    - "https://feeds.megaphone.fm/HSW4286072308"  # Wow in the World
+
+card_kids_story_2:
+  alias: play_podcast_series
+  args:
+    - "https://feeds.publicradio.org/public_feeds/circle-round/rss/rss"  # Circle Round
+
+card_kids_story_3:
+  alias: play_podcast_series
+  args:
+    - "https://feeds.megaphone.fm/FL7917050671"  # Story Pirates
+
+# Example 10: Card removal action (pause when card removed)
+# Useful for place-not-swipe RFID readers
+card_podcast_pauseable:
+  alias: play_podcast_card
+  args:
+    - "http://feeds.serialpodcast.org/serialpodcast"
+  # When card is removed from reader:
+  on_remove:
+    alias: pause
+
+# ============================================================================
+# FINDING PODCAST FEED URLs
+# ============================================================================
+#
+# Method 1: Search via Web UI (recommended)
+# - Use the podcast search feature in the Web App
+# - Search powered by iTunes Search API
+# - Feed URLs are automatically provided
+#
+# Method 2: Manual RSS URL discovery
+# - Visit podcast website
+# - Look for "RSS" or "Subscribe" links
+# - Copy the feed URL
+#
+# Method 3: RPC tool search (command line)
+# $ ./tools/run_rpc_tool.sh -c playerpodcast.ctrl.search_podcasts "podcast name"
+#
+# Method 4: Browser RSS reader
+# - Use browser extensions to detect RSS feeds on podcast pages
+#
+# ============================================================================
+# TIPS AND BEST PRACTICES
+# ============================================================================
+#
+# 1. Episode Resume:
+#    - Position is saved every 10 seconds (configurable)
+#    - Swipe card again to resume from last position
+#
+# 2. Completion Tracking:
+#    - Episodes >90% played are marked as completed
+#    - Completed episodes are skipped on next play
+#    - All completed? Auto-resets to allow re-listening
+#
+# 3. Performance (RPi Zero 2 W):
+#    - Feeds are cached for 1 hour by default
+#    - Episode streaming (no pre-download)
+#    - Memory-efficient operation
+#
+# 4. Feed Updates:
+#    - Feeds auto-refresh after cache expires (1 hour)
+#    - Force refresh: Use refresh_podcast_feed alias
+#
+# 5. Multiple Listeners:
+#    - Each podcast tracks completion per episode
+#    - Good for kids re-listening to favorites
+#
+# 6. Troubleshooting:
+#    - Check feed URL is accessible: curl -I <feed_url>
+#    - Verify feed format: Must be valid RSS/Atom
+#    - Check logs: journalctl --user -u jukebox-daemon -f
+#    - Test RPC: ./tools/run_rpc_tool.sh -c playerpodcast.ctrl.get_episodes "feed_url"
+#
+# ============================================================================
+# CONFIGURATION REFERENCE
+# ============================================================================
+#
+# See jukebox.yaml playerpodcast section for:
+# - cache_ttl: How long to cache feeds
+# - completion_threshold: Percentage for episode completion
+# - second_swipe_action: Action when same card swiped again
+# - save_position_interval: How often to save position
+# - episode_order: newest_first or oldest_first
+#

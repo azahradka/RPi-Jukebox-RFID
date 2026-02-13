@@ -13,7 +13,6 @@ import jukebox.plugs as plugin
 import jukebox.utils
 import jukebox.publishing as publishing
 from jukebox.rpc.server import RpcServer
-from jukebox.NvManager import nv_manager
 
 import jukebox
 import jukebox.cfghandler
@@ -43,7 +42,6 @@ class JukeBox:
         self._git_state = jukebox.utils.get_git_state()
         logger.info(f"Git state: {self._git_state}")
 
-        self.nvm = nv_manager()
         self._signal_cnt = 0
         self.rpc_server = None
         jukebox.cfghandler.load_yaml(cfg, configuration_file)
@@ -111,8 +109,7 @@ class JukeBox:
         # Some functions may return None: filter those
         # thread_list = [t for t in flatten(plugin.close_down(signal_id=esignal)) if t is not None]
         thread_list = list(filter(lambda x: x is not None, flatten(plugin.close_down(signal_id=esignal))))
-        # (4) Save all nonvolatile data
-        self.nvm.save_all()
+        # (4) Save configuration
         cfg.save(only_if_changed=True)
         # (5) Wait for open threads to close
         # Note: Not waiting for ALL open threads, but only for those threads that are returned by the

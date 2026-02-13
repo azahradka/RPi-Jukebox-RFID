@@ -294,6 +294,70 @@ const commands = {
     method: 'sync_change_on_rfid_scan',
     argKeys: ['option']
   },
+
+  // Podcasts
+  searchPodcasts: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'search_podcasts',
+    argKeys: ['query']
+  },
+  getPodcastEpisodes: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'get_episodes',
+    argKeys: ['feed_url', 'force_refresh']
+  },
+  getPodcastInfo: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'get_podcast_info',
+    argKeys: ['feed_url']
+  },
+  refreshPodcastFeed: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'refresh_feed',
+    argKeys: ['feed_url']
+  },
+  podcastPlayerStatus: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'playerstatus'
+  },
+  getPodcastStats: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'get_stats'
+  },
+  play_podcast_series: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'play_podcast_series',
+    argKeys: ['feed_url']
+  },
+  play_podcast_episode: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'play_podcast_episode',
+    argKeys: ['feed_url', 'episode_guid']
+  },
+  getPodcastCacheStats: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'get_cache_stats'
+  },
+  clearPodcastCache: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'clear_episode_cache'
+  },
+  evictPodcastEpisode: {
+    _package: 'player_podcast',
+    plugin: 'ctrl',
+    method: 'evict_episode',
+    argKeys: ['episode_guid']
+  },
 };
 
 export default commands;

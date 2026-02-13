@@ -41,6 +41,7 @@
         "placeholder": "Select an action",
         "actions": {
           "play_music": "Play music",
+          "play_podcast": "Play Podcast",
           "audio": "Audio & Volume",
           "host": "System",
           "timers": "Timers",
