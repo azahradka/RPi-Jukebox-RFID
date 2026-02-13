@@ -187,6 +187,32 @@ class EpisodeQueueManager:
         logger.debug("No next episode in queue")
         return None
 
+    def get_prev_episode(self, current_episode_guid: str, episodes: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Get previous episode in queue before current episode
+
+        Args:
+            current_episode_guid: Current episode GUID
+            episodes: List of episodes (should be sorted)
+
+        Returns:
+            Previous episode or None
+        """
+        try:
+            current_idx = next(
+                idx for idx, ep in enumerate(episodes)
+                if ep['guid'] == current_episode_guid
+            )
+            if current_idx > 0:
+                prev_ep = episodes[current_idx - 1]
+                logger.debug(f"Previous episode: {prev_ep['title']}")
+                return prev_ep
+        except StopIteration:
+            pass
+
+        logger.debug("No previous episode in queue")
+        return None
+
     def get_queue_info(self, episodes: List[Dict[str, Any]], podcast_id: str) -> Dict[str, Any]:
         """
         Get comprehensive queue information

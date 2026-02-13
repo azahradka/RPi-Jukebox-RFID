@@ -67,6 +67,7 @@ jingle:
   # startup_sound: ../../resources/audio/startupsound.mp3
   # Shutdown sound is not played on Ctrl-C (to reduce developer's stain)
   shutdown_sound: ../../resources/audio/shutdownsound.wav
+  waiting_sound: ../../resources/audio/waitingsound.wav
   # Use file ending to choose player from available jingle services
   service: auto
   # The playback volume of the jingles. (Comment out means use current system volume)
@@ -150,7 +151,6 @@ playerpodcast:
     enabled: true
     cache_path: ../../shared/cache/podcasts/episodes/
     max_cache_size_mb: 2048  # 2GB cache for ~40-100 episodes
-    resume_download_threshold: 30  # Download if resume position > 30 seconds
     download_timeout: 300  # 5 minutes max download time
     cleanup_on_startup: true
     min_free_space_mb: 500  # Stop downloading if disk space < 500MB

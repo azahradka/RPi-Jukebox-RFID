@@ -116,8 +116,6 @@ class PlayerPodcast:
         max_cache_size_mb = episode_cache_cfg.get('max_cache_size_mb', 2048)
         download_timeout = episode_cache_cfg.get('download_timeout', 300)
         min_free_space_mb = episode_cache_cfg.get('min_free_space_mb', 500)
-        self.resume_download_threshold = episode_cache_cfg.get('resume_download_threshold', 30)
-
         # Initialize episode downloader
         if episode_cache_enabled:
             self.episode_downloader = EpisodeDownloadManager(
@@ -255,13 +253,77 @@ class PlayerPodcast:
         except Exception as e:
             logger.error(f"Toggle failed: {e}")
 
+    def _play_episode_from_queue(self, episode):
+        """Play an episode, handling download/resolve and state updates.
+
+        Shared helper for next/prev episode navigation.
+
+        Args:
+            episode: Episode dict from the feed
+        """
+        episode_guid = episode['guid']
+        playback_url = self._resolve_playback_url(episode, resume_position=0)
+
+        with self.lock:
+            plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+
+            self.current_episode_guid = episode_guid
+            self.playback_active = True
+            self.current_episode_metadata = episode
+
+            self.state_manager.update_last_played(
+                self.current_podcast_id,
+                episode_guid,
+                self.current_feed_url
+            )
+
+        logger.info(f"Now playing: {episode.get('title', 'Unknown')}")
+
+    def _get_playable_queue_for_current(self):
+        """Fetch the playable episode queue for the currently active podcast.
+
+        Returns:
+            List of playable episode dicts, or empty list on failure.
+        """
+        with self.lock:
+            feed_url = self.current_feed_url
+            podcast_id = self.current_podcast_id
+        if not feed_url:
+            return []
+
+        feed_data = self.feed_manager.fetch_feed(feed_url)
+        if not feed_data:
+            logger.warning("Failed to fetch feed for episode navigation")
+            return []
+
+        episodes = feed_data.get('episodes', [])
+        if not episodes:
+            return []
+
+        playable, _ = self.queue_manager.get_playable_queue(episodes, podcast_id)
+        return playable
+
     def _next_episode(self):
-        """Skip to next episode"""
+        """Skip to next episode in the podcast feed"""
         try:
-            plugs.call('player', 'ctrl', 'next')
-            logger.info("Skipped to next episode")
+            with self.lock:
+                current_guid = self.current_episode_guid
+            if not current_guid:
+                logger.warning("next: no current episode")
+                return
+
+            playable = self._get_playable_queue_for_current()
+            if not playable:
+                return
+
+            next_ep = self.queue_manager.get_next_episode(current_guid, playable)
+            if not next_ep:
+                logger.info("Already at last episode, nothing to skip to")
+                return
+
+            self._play_episode_from_queue(next_ep)
         except Exception as e:
-            logger.error(f"Next episode failed: {e}")
+            logger.error(f"Next episode failed: {e}", exc_info=True)
 
     @plugs.tag
     def get_player_type_and_version(self):
@@ -358,11 +420,11 @@ class PlayerPodcast:
 
     def _resolve_playback_url(self, episode: Dict[str, Any], resume_position: float) -> str:
         """
-        Resolve playback URL, downloading episode to cache if needed for seeking.
+        Resolve playback URL, always downloading episode to local cache first.
 
-        For cached/downloaded episodes, returns an MPD-relative path
-        (e.g. 'podcast-cache/ep_xxx.mp3') so MPD can access local files
-        via its music_directory. For uncached episodes, returns the HTTP URL.
+        Returns an MPD-relative path (e.g. 'podcast-cache/ep_xxx.mp3') so MPD
+        can play local files reliably with seeking support. Falls back to HTTP
+        streaming only if the download fails or downloader is disabled.
 
         Args:
             episode: Episode metadata dictionary
@@ -379,24 +441,18 @@ class PlayerPodcast:
             logger.info("Streaming from CDN (downloader disabled)")
             return episode_url
 
-        should_download = (
-            resume_position > self.resume_download_threshold  # noqa: W504
-            or self.episode_downloader.is_cached(episode_guid)
-        )
+        already_cached = self.episode_downloader.is_cached(episode_guid)
         logger.info(f"Download decision: resume={resume_position}s, "
-                    f"threshold={self.resume_download_threshold}s, "
-                    f"already_cached={self.episode_downloader.is_cached(episode_guid)}, "
-                    f"will_download={should_download}")
-
-        if not should_download:
-            return episode_url
+                    f"already_cached={already_cached}, will_download=True")
 
         try:
             local_path = self.episode_downloader.get_local_path(episode_guid)
             needs_mpd_update = False
 
             if not local_path:
-                logger.info(f"Resume position {resume_position}s requires download")
+                logger.info("Downloading episode for local playback")
+                # Play waiting jingle in parallel with download
+                jingle_thread = self._start_waiting_jingle()
                 publishing.get_publisher().send('podcast.download_started', {
                     'episode_guid': episode_guid,
                     'episode_title': episode['title'],
@@ -408,6 +464,9 @@ class PlayerPodcast:
                     episode_title=episode['title'],
                     podcast_title=podcast_title
                 )
+                # Ensure jingle finished before starting MPD playback
+                if jingle_thread:
+                    jingle_thread.join()
                 publishing.get_publisher().send('podcast.download_completed', {
                     'episode_guid': episode_guid,
                     'local_path': str(local_path)
@@ -431,6 +490,46 @@ class PlayerPodcast:
 
         return episode_url
 
+    @staticmethod
+    def _play_wav_direct(filename):
+        """Play a WAV file directly via ALSA, bypassing the plugs lock.
+
+        The jingle plugin's play() acquires the plugs module lock for volume
+        save/restore, which causes deadlocks when called from a background
+        thread while the status poll also contends for the lock. Playing
+        directly to ALSA avoids this entirely."""
+        try:
+            import wave
+            import alsaaudio
+            fmt = {1: alsaaudio.PCM_FORMAT_U8, 2: alsaaudio.PCM_FORMAT_S16_LE,
+                   3: alsaaudio.PCM_FORMAT_S24_3LE, 4: alsaaudio.PCM_FORMAT_S32_LE}
+            with wave.open(filename, 'rb') as f:
+                period_size = f.getframerate() // 8
+                device = alsaaudio.PCM(
+                    channels=f.getnchannels(), rate=f.getframerate(),
+                    format=fmt[f.getsampwidth()], periodsize=period_size,
+                    device='default')
+                data = f.readframes(period_size)
+                while data:
+                    device.write(data)
+                    data = f.readframes(period_size)
+            logger.debug("Waiting jingle playback finished")
+        except Exception as e:
+            logger.warning(f"Could not play waiting jingle: {e}")
+
+    def _start_waiting_jingle(self):
+        """Pause MPD and start waiting jingle in a background thread.
+
+        Returns the thread (to join later) or None if no jingle configured."""
+        waiting_sound = cfg.getn('jingle', 'waiting_sound', default=None)
+        if not waiting_sound:
+            return None
+        plugs.call_ignore_errors('player', 'ctrl', 'pause')
+        thread = threading.Thread(target=self._play_wav_direct, args=(waiting_sound,),
+                                  name='WaitingJingle', daemon=True)
+        thread.start()
+        return thread
+
     def _update_mpd_database(self):
         """Trigger MPD database update and wait for it to complete,
         so newly downloaded episodes are indexed before playback."""
@@ -452,25 +551,20 @@ class PlayerPodcast:
         try:
             logger.info(f"Playing podcast series: {feed_url}")
 
-            # If this podcast is already the current one, handle re-trigger
-            # (e.g. place_not_swipe mode where card stays on reader)
+            # Second tap detection: if the same podcast is actually playing,
+            # delegate to the configured second_swipe_action (default: toggle).
+            # Must verify MPD state to avoid stale playback_active flag.
             with self.lock:
                 if self.playback_active and self.current_feed_url == feed_url:
-                    try:
-                        mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
-                        mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
-                    except Exception:
-                        mpd_state = 'stop'
-
-                    if mpd_state == 'play':
-                        # Already playing this podcast - no-op
-                        logger.info("Podcast already playing, ignoring re-trigger")
+                    mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+                    mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
+                    if mpd_state != 'stop':
+                        logger.info("Second tap detected, calling second_swipe_action")
+                        self.second_swipe_action()
                         return
-                    elif mpd_state == 'pause':
-                        # Paused (card removed & placed back) - resume
-                        logger.info("Podcast paused, resuming playback")
-                        plugs.call('player', 'ctrl', 'pause', args=(0,))
-                        return
+                    else:
+                        logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                        self.playback_active = False
 
             # Fetch feed
             feed_data = self.feed_manager.fetch_feed(feed_url)
@@ -611,23 +705,21 @@ class PlayerPodcast:
         try:
             logger.info(f"Playing specific episode: {episode_guid}")
 
-            # If this episode is already the current one, handle re-trigger
+            # Second tap detection: if the same episode is actually playing,
+            # delegate to the configured second_swipe_action (default: toggle).
+            # Must verify MPD state to avoid stale playback_active flag.
             with self.lock:
                 if (self.playback_active and self.current_feed_url == feed_url
                         and self.current_episode_guid == episode_guid):
-                    try:
-                        mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
-                        mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
-                    except Exception:
-                        mpd_state = 'stop'
-
-                    if mpd_state == 'play':
-                        logger.info("Episode already playing, ignoring re-trigger")
+                    mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+                    mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
+                    if mpd_state != 'stop':
+                        logger.info("Second tap detected, calling second_swipe_action")
+                        self.second_swipe_action()
                         return
-                    elif mpd_state == 'pause':
-                        logger.info("Episode paused, resuming playback")
-                        plugs.call('player', 'ctrl', 'pause', args=(0,))
-                        return
+                    else:
+                        logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                        self.playback_active = False
 
             # Fetch feed
             feed_data = self.feed_manager.fetch_feed(feed_url)
@@ -817,7 +909,7 @@ class PlayerPodcast:
             state: 1 to pause, 0 to resume
         """
         try:
-            plugs.call('player', 'ctrl', 'pause', state)
+            plugs.call('player', 'ctrl', 'pause', args=(state,))
         except Exception as e:
             logger.error(f"Pause failed: {e}")
 
@@ -836,12 +928,51 @@ class PlayerPodcast:
 
     @plugs.tag
     def prev(self):
-        """Skip to previous episode"""
+        """Skip to previous episode in the podcast feed"""
         try:
-            plugs.call('player', 'ctrl', 'prev')
-            logger.info("Skipped to previous episode")
+            with self.lock:
+                current_guid = self.current_episode_guid
+            if not current_guid:
+                logger.warning("prev: no current episode")
+                return
+
+            playable = self._get_playable_queue_for_current()
+            if not playable:
+                return
+
+            prev_ep = self.queue_manager.get_prev_episode(current_guid, playable)
+            if not prev_ep:
+                logger.info("Already at first episode, nothing to go back to")
+                return
+
+            self._play_episode_from_queue(prev_ep)
         except Exception as e:
-            logger.error(f"Previous episode failed: {e}")
+            logger.error(f"Previous episode failed: {e}", exc_info=True)
+
+    @plugs.tag
+    def is_podcast_active(self) -> bool:
+        """Check if the podcast player is currently driving playback.
+
+        Used by playermpd to route next/prev commands to the podcast player
+        when a podcast episode is playing. Verifies against the actual MPD
+        state so the flag is cleared when another player takes over.
+        """
+        with self.lock:
+            if not self.playback_active:
+                return False
+
+        # Verify MPD is actually playing our podcast file
+        try:
+            mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+            current_file = mpd_status.get('file', '') if mpd_status else ''
+            if current_file.startswith(self.mpd_podcast_subdir + '/'):
+                return True
+            # MPD is playing something else - another player took over
+            with self.lock:
+                self.playback_active = False
+            return False
+        except Exception:
+            return False
 
     @plugs.tag
     def get_stats(self) -> Dict[str, Any]:

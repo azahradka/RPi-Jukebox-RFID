@@ -387,9 +387,22 @@ class PlayerMPD:
         with self.mpd_lock:
             self.mpd_client.pause(state)
 
+    def _is_podcast_active(self):
+        """Check if the podcast player is currently driving playback.
+
+        Returns False if the podcast plugin is not loaded or not active."""
+        try:
+            return plugs.call('player_podcast', 'ctrl', 'is_podcast_active')
+        except Exception:
+            return False
+
     @plugs.tag
     def prev(self):
         logger.debug("Prev")
+        # Delegate to podcast player if it is driving playback
+        if self._is_podcast_active():
+            logger.debug('Podcast active, delegating prev to podcast player')
+            return plugs.call('player_podcast', 'ctrl', 'prev')
         if self.mpd_status['state'] == 'stop':
             logger.debug('Player is stopped, calling stopped_prev_action')
             return self.stopped_prev_action()
@@ -409,6 +422,10 @@ class PlayerMPD:
     def next(self):
         """Play next track in current playlist"""
         logger.debug("Next")
+        # Delegate to podcast player if it is driving playback
+        if self._is_podcast_active():
+            logger.debug('Podcast active, delegating next to podcast player')
+            return plugs.call('player_podcast', 'ctrl', 'next')
         if self.mpd_status['state'] == 'stop':
             logger.debug('Player is stopped, calling stopped_next_action')
             return self.stopped_next_action()
