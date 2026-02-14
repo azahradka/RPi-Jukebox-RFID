@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from 'react';
+import React, { useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import PlayerContext from '../../context/player/context';
@@ -23,6 +23,11 @@ const SeekBar = () => {
   const [progress, setProgress] = useState(0);
   const [timeElapsed, setTimeElapsed] = useState(parseFloat(playerstatus?.elapsed) || 0);
   const timeTotal = parseFloat(playerstatus?.duration) || 0;
+  const isPlaying = playerstatus?.state === 'play';
+
+  // Keep a ref to the latest server-reported elapsed time so the
+  // interpolation timer always starts from the freshest value.
+  const serverElapsed = useRef(parseFloat(playerstatus?.elapsed) || 0);
 
   const updateTimeAndProgress = (newTime) => {
     setTimeElapsed(newTime);
@@ -42,13 +47,29 @@ const SeekBar = () => {
     setIsSeeking(false);
   };
 
+  // Sync from server polls
   useEffect(() => {
-    // Avoid updating time and progress when user is seeking to new
-    // song position
     if (!isSeeking) {
-      updateTimeAndProgress(playerstatus?.elapsed);
+      const elapsed = parseFloat(playerstatus?.elapsed) || 0;
+      serverElapsed.current = elapsed;
+      updateTimeAndProgress(elapsed);
     }
   }, [playerstatus]);
+
+  // Client-side interpolation: tick every second while playing
+  useEffect(() => {
+    if (!isPlaying || isSeeking || timeTotal <= 0) return;
+
+    const interval = setInterval(() => {
+      setTimeElapsed((prev) => {
+        const next = Math.min(prev + 1, timeTotal);
+        setProgress(timeToProgress(timeTotal, next));
+        return next;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, isSeeking, timeTotal]);
 
   return <>
     <Grid container>

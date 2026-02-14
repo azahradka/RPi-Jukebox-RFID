@@ -9,7 +9,9 @@ Supported URI Types:
 - spotify:track:ID - Single track
 - spotify:playlist:ID - Playlist (all tracks)
 - spotify:album:ID - Album (all tracks)
-- spotify:artist:ID - Artist's top tracks (configurable limit)
+- spotify:show:ID - Podcast show (all episodes)
+- spotify:episode:ID - Single podcast episode
+- spotify:artist:ID - NOT SUPPORTED (Spotify removed the artist top tracks API endpoint in Feb 2026)
 
 Caching:
 - 1-hour TTL for resolved content
@@ -43,7 +45,7 @@ class SpotifyContentResolver:
     """Resolves Spotify URIs to track lists with caching"""
 
     def __init__(self, sp_client, cache_enabled: bool = True, cache_path: str = None,
-                 artist_track_limit: int = 20, lock: threading.RLock = None):
+                 lock: threading.RLock = None):
         """
         Initialize content resolver
 
@@ -51,12 +53,10 @@ class SpotifyContentResolver:
             sp_client: Spotify client instance (spotipy.Spotify)
             cache_enabled: Enable disk-based caching
             cache_path: Path to cache directory
-            artist_track_limit: Max tracks to fetch for artist URIs
             lock: Thread lock for API access
         """
         self.sp_client = sp_client
         self.cache_enabled = cache_enabled
-        self.artist_track_limit = artist_track_limit
         self.lock = lock or threading.RLock()
 
         # Initialize cache
@@ -272,29 +272,72 @@ class SpotifyContentResolver:
             logger.error(f"Failed to resolve album {album_id}: {e}")
             return []
 
+    def _resolve_show(self, show_id: str) -> List[str]:
+        """
+        Resolve show (podcast) to episode URIs
+
+        Args:
+            show_id: Spotify show ID
+
+        Returns:
+            List of episode URIs
+        """
+        try:
+            episode_uris = []
+            offset = 0
+            limit = 50
+
+            with self.lock:
+                while True:
+                    results = self.sp_client.show_episodes(
+                        show_id, offset=offset, limit=limit)
+
+                    for episode in results['items']:
+                        if episode and episode.get('uri'):
+                            episode_uris.append(episode['uri'])
+
+                    if not results.get('next'):
+                        break
+                    offset += limit
+
+            logger.info(f"Resolved show {show_id} to {len(episode_uris)} episodes")
+            return episode_uris
+        except SpotifyException as e:
+            logger.error(f"Failed to resolve show {show_id}: {e}")
+            return []
+
+    def _resolve_episode(self, episode_id: str) -> List[str]:
+        """
+        Resolve single episode URI
+
+        Args:
+            episode_id: Spotify episode ID
+
+        Returns:
+            List containing single episode URI
+        """
+        return [f"spotify:episode:{episode_id}"]
+
     def _resolve_artist(self, artist_id: str) -> List[str]:
         """
-        Resolve artist to top track URIs
+        Artist URI resolution is not supported.
+
+        The Spotify Web API endpoint for artist top tracks
+        (GET /v1/artists/{id}/top-tracks) was removed in February 2026.
+        Use a playlist or album URI instead.
 
         Args:
             artist_id: Spotify artist ID
 
         Returns:
-            List of artist's top track URIs (limited by artist_track_limit)
+            Empty list
         """
-        try:
-            with self.lock:
-                # Get artist's top tracks (market defaults to user's country)
-                results = self.sp_client.artist_top_tracks(artist_id)
-                tracks = results.get('tracks', [])
-
-                track_uris = [track['uri'] for track in tracks[:self.artist_track_limit]]
-
-            logger.info(f"Resolved artist {artist_id} to {len(track_uris)} top tracks")
-            return track_uris
-        except SpotifyException as e:
-            logger.error(f"Failed to resolve artist {artist_id}: {e}")
-            return []
+        logger.error(
+            f"Cannot resolve artist URI (artist_id={artist_id}): Spotify removed the "
+            "'Get Artist Top Tracks' API endpoint in February 2026. "
+            "Use a playlist or album URI instead."
+        )
+        return []
 
     def resolve_uri(self, uri: str) -> List[str]:
         """
@@ -329,6 +372,10 @@ class SpotifyContentResolver:
                 track_uris = self._resolve_playlist(content_id)
             elif content_type == 'album':
                 track_uris = self._resolve_album(content_id)
+            elif content_type == 'show':
+                track_uris = self._resolve_show(content_id)
+            elif content_type == 'episode':
+                track_uris = self._resolve_episode(content_id)
             elif content_type == 'artist':
                 track_uris = self._resolve_artist(content_id)
             else:

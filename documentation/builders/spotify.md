@@ -5,7 +5,7 @@ This guide explains how to set up and use Spotify streaming with your Phoniebox.
 ## Overview
 
 The Spotify integration allows you to:
-- Play Spotify playlists, albums, tracks, and artists via RFID cards
+- Play Spotify playlists, albums, and tracks via RFID cards
 - Control playback using RFID cards or Web App
 - Use Spotify alongside MPD (Music Player Daemon)
 - Stream music directly from Spotify's catalog
@@ -39,8 +39,7 @@ The Spotify integration allows you to:
 4. Fill in the details:
    - **App name**: `Phoniebox`
    - **App description**: `RFID-controlled music player`
-   - **Redirect URI**: `http://phoniebox.local:8888/callback`
-     - Replace `phoniebox.local` with your device's hostname if different
+   - **Redirect URI**: `http://127.0.0.1:8888/callback`
    - **Website**: Leave blank or use your project URL
    - **API/SDKs**: Select "Web API"
 5. Click **Save**
@@ -99,13 +98,12 @@ Find or add the `playerspotify` section:
 playerspotify:
   client_id: 'YOUR_CLIENT_ID_HERE'
   client_secret: 'YOUR_CLIENT_SECRET_HERE'
-  redirect_uri: 'http://phoniebox.local:8888/callback'
+  redirect_uri: 'http://127.0.0.1:8888/callback'
   credential_file: ../../shared/settings/spotify_credentials.json
   status_file: ../../shared/settings/spotify_player_status.json
   device_name: 'Phoniebox'
   second_swipe_action:
     alias: toggle
-  artist_track_limit: 20
   cache_enabled: true
   cache_path: ../../shared/cache/spotify/
 ```
@@ -166,30 +164,44 @@ journalctl --user -u librespot.service -n 50
 
 ### 5. Authenticate with Spotify
 
-Run the authentication setup tool:
+Open the Phoniebox Web UI in your browser (e.g., `http://phoniebox.local` or
+`http://<pi-ip>`). Navigate to **Settings** and find the **Spotify** card.
+
+1. Click **Connect Spotify** — a new tab opens with the Spotify login page
+2. Log in and approve the permissions
+3. Spotify redirects to `http://127.0.0.1:8888/callback?code=...` — because
+   nothing is listening on your local machine, the browser shows an error page
+   ("This site can't be reached"). **This is expected.**
+4. Copy the **full URL** from your browser's address bar
+5. Switch back to the Phoniebox Settings tab and paste the URL into the text
+   field
+6. Click **Complete Connection**
+
+The Phoniebox backend exchanges the code for an access token and stores
+encrypted credentials. You should see the status change to "Connected".
+
+**Alternative — CLI auth tool (advanced):**
+
+If you prefer to authenticate from the command line you can still use SSH port
+forwarding and the standalone script:
 
 ```bash
+# Terminal 1: SSH tunnel
+ssh -L 8888:127.0.0.1:8888 -i ~/.ssh/Phoniebox.pub boxadmin@phoniebox.local
+
+# Terminal 2: run auth script on the Pi
+ssh -i ~/.ssh/Phoniebox.pub boxadmin@phoniebox.local
+cd ~/RPi-Jukebox-RFID
 source .venv/bin/activate
 python tools/spotify_auth_setup.py
 ```
 
-The script will:
-1. Start a temporary web server on port 8888
-2. Open your browser to Spotify's authorization page
-3. Ask you to grant permissions to Phoniebox
-4. Capture the authorization code
-5. Save encrypted credentials
-
-**If the browser doesn't open automatically:**
-1. Copy the URL from the terminal
-2. Open it manually in a browser
-3. Grant permissions
-4. You'll be redirected to a success page
-
 **Troubleshooting authentication:**
-- Make sure port 8888 is not blocked by firewall
-- Verify redirect URI in Spotify app matches configuration
+- Verify the redirect URI in the Spotify Developer Dashboard exactly matches
+  `http://127.0.0.1:8888/callback`
 - Check that you're using a Spotify Premium account
+- Make sure you copy the **entire** URL from the address bar (it starts with
+  `http://127.0.0.1:8888/callback?code=`)
 
 ### 6. Restart Jukebox
 
@@ -248,9 +260,6 @@ Try these commands:
 
 # Play an album
 > playerspotify.ctrl.play_content spotify:album:6DEjYFkNZh67HP7R9PSZvv
-
-# Play artist's top tracks
-> playerspotify.ctrl.play_content spotify:artist:0OdUWJ0sBjDrqHygGUXeCF
 
 # Control playback
 > playerspotify.ctrl.toggle
@@ -507,15 +516,6 @@ playerspotify:
     alias: skip  # Options: toggle, play, skip, rewind, replay, none
 ```
 
-### Artist Track Limit
-
-Control how many tracks to fetch for artist URIs:
-
-```yaml
-playerspotify:
-  artist_track_limit: 10  # Default: 20, Max: 50
-```
-
 ### Cache Configuration
 
 ```yaml
@@ -628,7 +628,7 @@ A: ~2 MB per minute at 160 kbps, ~4 MB per minute at 320 kbps.
 A: Yes, but only one can play at a time. Playback switches to the last activated device.
 
 **Q: Does it support podcasts?**
-A: Not yet. Only music content (tracks, albums, playlists, artists).
+A: Not yet. Only music content (tracks, albums, playlists).
 
 **Q: Can I control volume?**
 A: Yes, use standard volume commands (they work with both MPD and Spotify):

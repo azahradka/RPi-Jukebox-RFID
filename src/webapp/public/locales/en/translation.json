@@ -42,6 +42,7 @@
         "actions": {
           "play_music": "Play music",
           "play_podcast": "Play Podcast",
+          "play_spotify": "Play Spotify",
           "audio": "Audio & Volume",
           "host": "System",
           "timers": "Timers",
@@ -63,6 +64,12 @@
           "button-label": "Select music",
           "no-music-selected": "No music selected",
           "loading-song-error": "An error occurred while loading song."
+        },
+        "play-spotify": {
+          "title": "Play Spotify Content",
+          "not-selected": "No Spotify content selected yet",
+          "select-content": "Select Spotify Content",
+          "change-selection": "Change Selection"
         },
         "audio": {
           "repeat": {
@@ -133,7 +140,8 @@
       "search-label": "Search",
       "toggle-label": "Toggle Album/Folder view",
       "albums": "Albums",
-      "folders": "Folders"
+      "folders": "Folders",
+      "spotify": "Spotify"
     },
     "selector-header": {
       "title": "Select an album, folder or song"
@@ -302,8 +310,67 @@
         "max-volume": "Maximum Volume"
       }
     },
+    "spotify": {
+      "title": "Spotify",
+      "connected": "Connected",
+      "not-connected": "Not Connected",
+      "unconfigured": "Not Configured",
+      "unconfigured-hint": "To use Spotify, create a Spotify app and enter its credentials below.",
+      "setup-step-1": "Go to the Spotify Developer Dashboard and log in.",
+      "setup-step-2": "Click \"Create App\".",
+      "setup-step-3": "Set the Redirect URI to:",
+      "setup-step-4": "Select \"Web API\" when asked which APIs you will use.",
+      "setup-step-5": "Copy the Client ID and Client Secret into the fields below.",
+      "client-id-label": "Client ID",
+      "client-secret-label": "Client Secret",
+      "save-config": "Save",
+      "save-config-success": "Credentials saved. You can now connect your Spotify account.",
+      "save-config-error": "Failed to save credentials.",
+      "config-required": "Both Client ID and Client Secret are required.",
+      "connecting": "Connecting to Spotify...",
+      "connected-hint": "Your Spotify account is connected.",
+      "connect-hint": "Connect your Spotify Premium account to stream music.",
+      "connect": "Connect Spotify",
+      "disconnect": "Disconnect",
+      "paste-url-hint": "After approving on Spotify, you'll see an error page. Copy the full URL from your browser's address bar and paste it below.",
+      "paste-url-label": "Paste callback URL here",
+      "paste-url-submit": "Complete Connection",
+      "paste-url-error": "Could not find an authorization code in that URL. Make sure you copied the full URL from the address bar.",
+      "auth-failed": "Authentication failed. Please try again.",
+      "edit-config": "Edit Credentials"
+    },
     "systemcontrols": {
       "title": "System Controls"
+    }
+  },
+  "spotify": {
+    "not-connected": "Spotify is not connected",
+    "connect-first": "Connect your Spotify account in Settings to browse and play music.",
+    "go-to-settings": "Go to Settings",
+    "back": "Back",
+    "play": "Play",
+    "play-all": "Play All",
+    "select": "Select",
+    "select-for-card": "Select for Card",
+    "view-details": "View Details",
+    "assign-to-card": "Assign to Card",
+    "tabs": {
+      "search": "Search",
+      "library": "My Library"
+    },
+    "search": {
+      "label": "Search Spotify",
+      "placeholder": "Search for songs, albums, playlists...",
+      "button": "Search",
+      "welcome": "Search Spotify",
+      "hint": "Search for songs, albums, playlists, and podcasts on Spotify.",
+      "error": "Search failed",
+      "no-results": "No results found. Try a different search term."
+    },
+    "library": {
+      "playlists": "Playlists",
+      "albums": "Saved Albums",
+      "empty": "Your Spotify library is empty."
     }
   }
 }

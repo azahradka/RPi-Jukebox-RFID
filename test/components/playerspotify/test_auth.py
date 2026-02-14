@@ -158,7 +158,8 @@ def test_refresh_token(mock_oauth_class, auth_manager):
     refreshed = auth_manager._refresh_token()
 
     assert refreshed == new_token
-    assert auth_manager.token_info == new_token
+    # _refresh_token returns the new token but does NOT update self.token_info
+    # (callers like get_access_token do: self.token_info = self._refresh_token())
     mock_oauth.refresh_access_token.assert_called_once_with('refresh_token_123')
 
 

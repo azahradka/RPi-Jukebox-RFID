@@ -47,6 +47,7 @@ const CardsRegister = () => {
       actionData={actionData}
       setActionData={setActionData}
       podcastMetadata={registerCard?.podcastMetadata}
+      spotifyMetadata={registerCard?.spotifyMetadata}
     />
   );
 };

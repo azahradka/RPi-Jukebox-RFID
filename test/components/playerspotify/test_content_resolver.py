@@ -28,8 +28,7 @@ def resolver(mock_sp_client, temp_cache_dir):
     return SpotifyContentResolver(
         sp_client=mock_sp_client,
         cache_enabled=True,
-        cache_path=temp_cache_dir,
-        artist_track_limit=20
+        cache_path=temp_cache_dir
     )
 
 
@@ -46,7 +45,6 @@ def test_initialization(resolver, temp_cache_dir):
     """Test resolver initialization"""
     assert resolver.sp_client is not None
     assert resolver.cache_enabled is True
-    assert resolver.artist_track_limit == 20
     assert resolver.cache_path == Path(temp_cache_dir)
 
 
@@ -161,20 +159,21 @@ def test_resolve_album(resolver, mock_sp_client):
     mock_sp_client.album_tracks.assert_called_once()
 
 
-def test_resolve_artist(resolver, mock_sp_client):
-    """Test artist top tracks resolution"""
+def test_resolve_artist_returns_empty(resolver, mock_sp_client):
+    """Test artist resolution returns empty list (API endpoint removed Feb 2026)"""
     artist_id = '0OdUWJ0sBjDrqHygGUXeCF'
 
-    mock_sp_client.artist_top_tracks.return_value = {
-        'tracks': [
-            {'uri': f'spotify:track:track{i}'} for i in range(30)
-        ]
-    }
-
     result = resolver._resolve_artist(artist_id)
-    assert len(result) == 20  # Limited by artist_track_limit
-    assert result[0] == 'spotify:track:track0'
-    mock_sp_client.artist_top_tracks.assert_called_once()
+    assert result == []
+    # Should NOT call the removed API endpoint
+    mock_sp_client.artist_top_tracks.assert_not_called()
+
+
+def test_resolve_artist_uri_returns_empty(resolver, mock_sp_client):
+    """Test that resolving a spotify:artist URI returns empty list"""
+    result = resolver.resolve_uri('spotify:artist:0OdUWJ0sBjDrqHygGUXeCF')
+    assert result == []
+    mock_sp_client.artist_top_tracks.assert_not_called()
 
 
 def test_resolve_uri_track(resolver, mock_sp_client):

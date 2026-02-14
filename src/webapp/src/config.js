@@ -88,6 +88,13 @@ const JUKEBOX_ACTIONS_MAP = {
       play_podcast_episode: {},
     }
   },
+
+  // Spotify
+  play_spotify: {
+    commands: {
+      play_spotify_card: {},
+    }
+  },
 }
 
 const TIMER_STEPS = [0, 2, 5, 10, 15, 20, 30, 45, 60, 120, 180, 240];

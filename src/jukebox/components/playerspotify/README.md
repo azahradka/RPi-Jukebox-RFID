@@ -77,7 +77,7 @@ modules:
 playerspotify:
   client_id: 'YOUR_CLIENT_ID'
   client_secret: 'YOUR_CLIENT_SECRET'
-  redirect_uri: 'http://phoniebox.local:8888/callback'
+  redirect_uri: 'http://127.0.0.1:8888/callback'
   credential_file: ../../shared/settings/spotify_credentials.json
   status_file: ../../shared/settings/spotify_player_status.json
   device_name: 'Phoniebox'

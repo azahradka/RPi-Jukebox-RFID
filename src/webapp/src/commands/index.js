@@ -358,6 +358,76 @@ const commands = {
     method: 'evict_episode',
     argKeys: ['episode_guid']
   },
+
+  // Spotify
+  spotifyGetConfig: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'get_spotify_config',
+  },
+  spotifySetConfig: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'set_spotify_config',
+    argKeys: ['client_id', 'client_secret'],
+  },
+  spotifyGetAuthStatus: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'get_auth_status',
+  },
+  spotifyGetAuthUrl: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'get_auth_url',
+  },
+  spotifyAuthenticate: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'authenticate',
+    argKeys: ['auth_code'],
+  },
+  spotifyLogout: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'logout',
+  },
+  spotifySearch: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'search',
+    argKeys: ['query', 'content_type', 'limit'],
+  },
+  spotifyGetUserPlaylists: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'get_user_playlists',
+    argKeys: ['limit', 'offset'],
+  },
+  spotifyGetUserAlbums: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'get_user_albums',
+    argKeys: ['limit', 'offset'],
+  },
+  spotifyGetContentDetails: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'get_content_details',
+    argKeys: ['uri'],
+  },
+  spotifyPlayContent: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'play_content',
+    argKeys: ['uri'],
+  },
+  play_spotify_card: {
+    _package: 'player_spotify',
+    plugin: 'ctrl',
+    method: 'play_card',
+    argKeys: ['uri'],
+  },
 };
 
 export default commands;

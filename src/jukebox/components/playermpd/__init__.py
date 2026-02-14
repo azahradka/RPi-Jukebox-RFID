@@ -291,6 +291,15 @@ class PlayerMPD:
                 value = None
         return value
 
+    def _activate_mpd(self):
+        """Stop Spotify and claim active player so only MPD publishes status."""
+        if components.player.get_active_player() != 'mpd':
+            try:
+                plugs.call('player_spotify', 'ctrl', 'stop')
+            except Exception as e:
+                logger.debug(f"Could not stop Spotify: {e}")
+            components.player.set_active_player('mpd')
+
     def _mpd_status_poll(self):
         """
         this method polls the status from mpd and stores the important inforamtion in the music_player_status,
@@ -339,7 +348,8 @@ class PlayerMPD:
             except Exception:
                 pass  # Podcast player not active or not available
 
-        publishing.get_publisher().send('playerstatus', self.mpd_status)
+        if components.player.get_active_player() == 'mpd':
+            publishing.get_publisher().send('playerstatus', self.mpd_status)
 
     # MPD can play absolute paths but can find songs in its database only by relative path
     # This function aims to prepare the song_url accordingly
@@ -369,6 +379,7 @@ class PlayerMPD:
 
     @plugs.tag
     def play(self):
+        self._activate_mpd()
         with self.mpd_lock:
             self.mpd_client.play()
 
@@ -598,6 +609,7 @@ class PlayerMPD:
 
     @plugs.tag
     def resume(self):
+        self._activate_mpd()
         with self.mpd_lock:
             songpos = self.current_folder_status["CURRENTSONGPOS"]
             elapsed = self.current_folder_status["ELAPSED"]
@@ -703,6 +715,7 @@ class PlayerMPD:
         :param recursive: Add folder recursively
         """
         # TODO: This changes the current state -> Need to save last state
+        self._activate_mpd()
         with self.mpd_lock:
             logger.info(f"Play folder: '{folder}'")
             self.mpd_client.clear()
@@ -738,6 +751,7 @@ class PlayerMPD:
         :param albumartist: Artist of the Album provided by MPD database
         :param album: Album name provided by MPD database
         """
+        self._activate_mpd()
         with self.mpd_lock:
             logger.info(f"Play album: '{album}' by '{albumartist}")
             self.mpd_client.clear()

@@ -35,8 +35,9 @@ import base64
 
 logger = logging.getLogger('jb.SpotifyAuth')
 
-# Required scopes for Spotify playback control
+# Required scopes for Spotify playback control and streaming
 SPOTIFY_SCOPES = [
+    'streaming',
     'user-read-playback-state',
     'user-modify-playback-state',
     'playlist-read-private',

@@ -12,7 +12,7 @@
 # - spotify:track:ID      - Single track
 # - spotify:playlist:ID   - Playlist (all tracks)
 # - spotify:album:ID      - Album (all tracks)
-# - spotify:artist:ID     - Artist's top 20 tracks
+# - spotify:artist:ID     - NOT SUPPORTED (Spotify removed this API endpoint in Feb 2026)
 #
 # You can also use URL format:
 # - https://open.spotify.com/track/ID → converts to spotify:track:ID
@@ -67,18 +67,10 @@
   args: ['spotify:track:7qiZfU4dY1lWllzX7mPBI']
 
 # ============================================================================
-# Artists (plays top 20 tracks)
+# Artists - NOT SUPPORTED
+# Spotify removed the "Get Artist Top Tracks" API endpoint in February 2026.
+# Use a playlist or album URI instead.
 # ============================================================================
-
-# The Beatles
-'6666666666':
-  alias: play_spotify_content
-  args: ['spotify:artist:3WrFJ7ztbogyGnTHbHJFl2']
-
-# Taylor Swift
-'7777777777':
-  alias: play_spotify_content
-  args: ['spotify:artist:06HL4z0CvFAxyc27GXpf02']
 
 # ============================================================================
 # Control Cards (work with active player)

@@ -26,18 +26,20 @@ References:
 - https://developer.spotify.com/documentation/web-api/
 """
 
+import json
 import logging
+import os
+import subprocess
 import threading
 import time
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
 from spotipy.exceptions import SpotifyException
 
 import jukebox.cfghandler
 import jukebox.plugs as plugs
 import jukebox.publishing as publishing
-from jukebox.NvManager import nv_manager
+import components.player as player_module
 from .spotify_auth import SpotifyAuthManager
 from .content_resolver import SpotifyContentResolver
 
@@ -49,54 +51,63 @@ class PlayerSpotify:
     """Spotify Player Plugin - mirrors playermpd interface"""
 
     def __init__(self):
-        """Initialize Spotify player plugin"""
-        self.nvm = nv_manager()
+        """Initialize Spotify player plugin
 
+        Loads gracefully even without credentials so the web UI
+        can call get_auth_status / get_auth_url before the user
+        has configured anything.
+        """
         # Load configuration
         self.client_id = cfg.getn('playerspotify', 'client_id', default='')
         self.client_secret = cfg.getn('playerspotify', 'client_secret', default='')
         self.redirect_uri = cfg.getn('playerspotify', 'redirect_uri',
-                                     default='http://localhost:8888/callback')
+                                     default='http://127.0.0.1:8888/callback')
         self.device_name = cfg.getn('playerspotify', 'device_name', default='Phoniebox')
         self.credential_file = cfg.getn('playerspotify', 'credential_file',
                                         default='../../shared/settings/spotify_credentials.json')
         self.status_file = cfg.getn('playerspotify', 'status_file',
                                     default='../../shared/settings/spotify_player_status.json')
 
-        # Validate credentials
-        if not self.client_id or not self.client_secret:
-            logger.error("Spotify client_id and client_secret must be configured in jukebox.yaml")
-            raise ValueError("Missing Spotify credentials in configuration")
-
-        # Initialize authentication manager
-        self.auth_manager = SpotifyAuthManager(
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            redirect_uri=self.redirect_uri,
-            credential_file=self.credential_file
-        )
-
-        # Initialize Spotify client with thread-safe lock
+        # Thread-safe lock for API access
         self.lock = threading.RLock()
         self.sp_client = None
-        self._initialize_client()
+        self.auth_manager = None
+
+        # Graceful init: load even when credentials are missing
+        self._configured = bool(self.client_id and self.client_secret)
+        if not self._configured:
+            logger.warning("Spotify client_id / client_secret not configured. "
+                           "Plugin loaded in unconfigured state — "
+                           "use the web UI Settings page to connect.")
+        else:
+            # Initialize authentication manager
+            self.auth_manager = SpotifyAuthManager(
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+                redirect_uri=self.redirect_uri,
+                credential_file=self.credential_file
+            )
+            # Try to initialise the API client (may fail if not yet authed)
+            try:
+                self._initialize_client()
+            except Exception:
+                logger.warning("Spotify client not authenticated yet — "
+                               "use the web UI Settings page to connect.")
 
         # Initialize content resolver with caching
         cache_enabled = cfg.getn('playerspotify', 'cache_enabled', default=True)
         cache_path = cfg.getn('playerspotify', 'cache_path',
-                             default='../../shared/cache/spotify/')
-        artist_track_limit = cfg.getn('playerspotify', 'artist_track_limit', default=20)
+                              default='../../shared/cache/spotify/')
 
         self.content_resolver = SpotifyContentResolver(
             sp_client=self.sp_client,
             cache_enabled=cache_enabled,
             cache_path=cache_path,
-            artist_track_limit=artist_track_limit,
             lock=self.lock
         )
 
         # Load player status from disk
-        self.player_status = self.nvm.load(self.status_file)
+        self.player_status = self._load_state()
         if not self.player_status:
             self.player_status = {
                 'state': 'stopped',  # stopped, playing, paused
@@ -125,41 +136,67 @@ class PlayerSpotify:
             self.toggle
         )
 
-        # Discover Spotify Connect device
-        self._discover_device()
-
-        # Start status publishing thread
+        # Device discovery happens lazily in the status thread — never
+        # block the MainThread with Spotify API calls during init.
         self.status_thread = threading.Thread(target=self._status_publisher_loop, daemon=True)
         self.status_thread_stop = threading.Event()
         self.status_thread.start()
 
-        logger.info(f"Spotify player initialized (device: {self.device_name})")
+        logger.info(f"Spotify player initialized (device: {self.device_name}, "
+                     f"configured: {self._configured}, "
+                     f"authenticated: {self.sp_client is not None})")
 
     def _initialize_client(self):
         """Initialize Spotify client with authentication"""
         try:
             token = self.auth_manager.get_access_token()
-            self.sp_client = spotipy.Spotify(auth=token)
+            self.sp_client = spotipy.Spotify(
+                auth=token,
+                requests_timeout=10,
+                retries=0,
+            )
             logger.info("Spotify client initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Spotify client: {e}")
             raise
 
+    def _require_client(self):
+        """Raise if the Spotify client is not available"""
+        if not self.sp_client:
+            raise SpotifyException(
+                http_status=401, code=-1,
+                msg="Spotify not authenticated. Connect via Settings."
+            )
+
+    def _activate(self):
+        """Stop MPD and claim active player so only Spotify publishes status."""
+        if player_module.get_active_player() != 'spotify':
+            try:
+                plugs.call('player', 'ctrl', 'stop')
+            except Exception as e:
+                logger.debug(f"Could not stop MPD: {e}")
+            player_module.set_active_player('spotify')
+
     def _discover_device(self):
-        """Discover librespot device by name"""
+        """Discover librespot device by name.
+
+        Safe to call from any thread.  Never blocks longer than the
+        spotipy ``requests_timeout`` (10 s).
+        """
+        if not self.sp_client:
+            return
         try:
-            with self.lock:
-                devices = self.sp_client.devices()
-                if devices and 'devices' in devices:
-                    for device in devices['devices']:
-                        if device['name'] == self.device_name:
-                            self.player_status['device_id'] = device['id']
-                            logger.info(f"Found Spotify device: {self.device_name} ({device['id']})")
-                            return
-                    logger.warning(f"Spotify device '{self.device_name}' not found. "
-                                 f"Make sure librespot is running.")
-                else:
-                    logger.warning("No Spotify devices available")
+            devices = self.sp_client.devices()
+            if devices and 'devices' in devices:
+                for device in devices['devices']:
+                    if device['name'] == self.device_name:
+                        self.player_status['device_id'] = device['id']
+                        logger.info(f"Found Spotify device: {self.device_name} ({device['id']})")
+                        return
+                logger.warning(f"Spotify device '{self.device_name}' not found. "
+                             f"Make sure librespot is running.")
+            else:
+                logger.warning("No Spotify devices available")
         except Exception as e:
             logger.error(f"Device discovery failed: {e}")
 
@@ -169,8 +206,42 @@ class PlayerSpotify:
             self._discover_device()
         return self.player_status.get('device_id') is not None
 
+    def _restart_librespot_with_token(self):
+        """Restart librespot with the current access token.
+
+        This registers the device with the Spotify account so the
+        Web API can see it.  librespot caches its own credentials
+        after the first connection, so subsequent restarts don't
+        need the token.
+        """
+        if not self.auth_manager:
+            return
+        try:
+            token = self.auth_manager.get_access_token()
+            env_dir = os.path.expanduser('~/.cache/librespot')
+            os.makedirs(env_dir, exist_ok=True)
+            env_file = os.path.join(env_dir, 'env')
+            with open(env_file, 'w') as f:
+                f.write(f'SPOTIFY_ACCESS_TOKEN={token}\n')
+            os.chmod(env_file, 0o600)
+
+            subprocess.run(
+                ['systemctl', '--user', 'stop', 'librespot'],
+                timeout=10, check=False)
+            subprocess.run(
+                ['systemctl', '--user', 'start', 'librespot'],
+                timeout=10, check=False)
+
+            # Give librespot a moment to connect
+            time.sleep(3)
+            logger.info("Restarted librespot with access token")
+        except Exception as e:
+            logger.error(f"Failed to restart librespot: {e}")
+
     def _refresh_token_if_needed(self):
         """Check and refresh token if expired"""
+        if not self.auth_manager or not self.sp_client:
+            return
         try:
             if self.auth_manager.is_token_expired():
                 logger.debug("Token expired, refreshing...")
@@ -179,34 +250,459 @@ class PlayerSpotify:
         except Exception as e:
             logger.error(f"Token refresh failed: {e}")
 
+    def _load_state(self):
+        """Load player status from JSON file"""
+        if os.path.exists(self.status_file):
+            try:
+                with open(self.status_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load player status: {e}")
+                return {}
+        return {}
+
     def _save_status(self):
-        """Save player status to disk"""
-        self.nvm.save(self.player_status, self.status_file)
+        """Save player status to JSON file"""
+        try:
+            with open(self.status_file, 'w') as f:
+                json.dump(self.player_status, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save player status: {e}")
+
+    def _to_mpd_status(self):
+        """Convert Spotify status to MPD-compatible format for the web UI.
+
+        The web UI Player components expect MPD-style fields (state='play',
+        top-level title/artist/album, elapsed/duration in seconds, etc.).
+        """
+        status = self.player_status
+        track = status.get('current_track') or {}
+        state_map = {'playing': 'play', 'paused': 'pause', 'stopped': 'stop'}
+        repeat_val = status.get('repeat', 'off')
+
+        mpd_status = {
+            'state': state_map.get(status.get('state', 'stopped'), 'stop'),
+            'title': track.get('name', ''),
+            'artist': track.get('artist', ''),
+            'album': track.get('album', ''),
+            'file': track.get('uri', ''),
+            'coverart_url': track.get('artwork_url'),
+            'elapsed': str(status.get('position_ms', 0) / 1000),
+            'duration': str(track.get('duration_ms', 0) / 1000),
+            'random': '1' if status.get('shuffle') else '0',
+            'repeat': '1' if repeat_val in ('track', 'context') else '0',
+            'single': '1' if repeat_val == 'track' else '0',
+            # songid must be truthy when a track is active
+            'songid': track.get('uri', ''),
+            'player_type': 'spotify',
+        }
+        return mpd_status
+
+    @staticmethod
+    def _get_retry_after(exc):
+        """Extract Retry-After seconds from a SpotifyException, default 30."""
+        if exc.headers:
+            try:
+                return max(int(exc.headers.get('Retry-After', 30)), 30)
+            except (ValueError, TypeError):
+                pass
+        return 30
 
     def _status_publisher_loop(self):
-        """Background thread to publish player status every 1 second"""
-        while not self.status_thread_stop.is_set():
+        """Background thread to publish player status
+
+        Uses adaptive polling:
+        - 1 s  while playing
+        - 5 s  while paused / stopped / unauthenticated
+        - 30+ s after an API error (backs off on repeated errors)
+        """
+        consecutive_errors = 0
+
+        # Initial device discovery (off the MainThread)
+        if self.sp_client and not self.player_status.get('device_id'):
             try:
-                status = self.playerstatus()
-                publishing.get_publisher().send('playerstatus', status)
+                self._discover_device()
             except Exception as e:
-                logger.debug(f"Status publishing error: {e}")
-            time.sleep(1)
+                logger.debug(f"Initial device discovery failed: {e}")
+
+        while not self.status_thread_stop.is_set():
+            interval = self._poll_status_once(consecutive_errors)
+            if interval < 0:
+                # Negative means success; absolute value is the real interval
+                consecutive_errors = 0
+                interval = -interval
+            else:
+                consecutive_errors += 1
+            self.status_thread_stop.wait(timeout=interval)
+
+    def _is_active(self):
+        """Return True if Spotify is the active player."""
+        return player_module.get_active_player() == 'spotify'
+
+    def _poll_status_once(self, consecutive_errors):
+        """Run one status-poll cycle.
+
+        Returns a negative interval on success (negate to get real interval)
+        or a positive interval on failure (for backoff).
+        Only publishes status when Spotify is the active player.
+        """
+        if not self.sp_client:
+            if self._is_active():
+                publishing.get_publisher().send(
+                    'playerstatus', self._to_mpd_status())
+            return -10  # success, slow poll
+
+        try:
+            self._fetch_and_update_status()
+            if self._is_active():
+                publishing.get_publisher().send(
+                    'playerstatus', self._to_mpd_status())
+            active = self.player_status.get('state') == 'playing'
+            return -(5 if active else 30)
+        except SpotifyException as e:
+            if self._is_active():
+                publishing.get_publisher().send(
+                    'playerstatus', self._to_mpd_status())
+            if e.http_status == 429:
+                interval = self._get_retry_after(e)
+                logger.warning(f"Spotify rate-limited, backing off {interval}s")
+                return interval
+            interval = min(30 * (consecutive_errors + 1), 300)
+            logger.debug(f"Status poll error: {e}")
+            return interval
+        except Exception as e:
+            if self._is_active():
+                publishing.get_publisher().send(
+                    'playerstatus', self._to_mpd_status())
+            interval = min(30 * (consecutive_errors + 1), 300)
+            logger.debug(f"Status poll error: {e}")
+            return interval
 
     @plugs.tag
     def get_player_type_and_version(self):
         """Return player type and version"""
         return {'player': 'Spotify', 'version': 'spotipy 2.23.0'}
 
+    # ------------------------------------------------------------------
+    # Auth methods (safe to call even when not yet configured)
+    # ------------------------------------------------------------------
+
+    @plugs.tag
+    def get_spotify_config(self) -> Dict[str, Any]:
+        """Return current Spotify client configuration
+
+        The client_secret is masked for display (only last 4 chars shown).
+
+        Returns:
+            Dictionary with ``client_id``, ``client_secret_masked``,
+            ``redirect_uri``, and ``configured`` fields.
+        """
+        masked = ''
+        if self.client_secret and len(self.client_secret) > 4:
+            masked = '*' * 8 + self.client_secret[-4:]
+        elif self.client_secret:
+            masked = '*' * len(self.client_secret)
+        return {
+            'client_id': self.client_id,
+            'client_secret_masked': masked,
+            'redirect_uri': self.redirect_uri,
+            'configured': self._configured,
+        }
+
+    @plugs.tag
+    def set_spotify_config(self, client_id: str, client_secret: str) -> Dict[str, Any]:
+        """Save Spotify client credentials and reinitialize the auth manager
+
+        Persists client_id and client_secret to jukebox.yaml and
+        reinitializes the authentication manager so the user can
+        proceed to the OAuth connect flow without restarting the daemon.
+
+        Args:
+            client_id: Spotify application client ID
+            client_secret: Spotify application client secret
+
+        Returns:
+            Dictionary with ``success`` and ``configured`` fields.
+        """
+        try:
+            client_id = (client_id or '').strip()
+            client_secret = (client_secret or '').strip()
+
+            # Persist to jukebox.yaml
+            cfg.setn('playerspotify', 'client_id', value=client_id)
+            cfg.setn('playerspotify', 'client_secret', value=client_secret)
+            cfg.save(only_if_changed=True)
+
+            # Update instance state
+            self.client_id = client_id
+            self.client_secret = client_secret
+            self._configured = bool(client_id and client_secret)
+
+            # Reinitialize auth manager if we now have credentials
+            if self._configured:
+                self.auth_manager = SpotifyAuthManager(
+                    client_id=self.client_id,
+                    client_secret=self.client_secret,
+                    redirect_uri=self.redirect_uri,
+                    credential_file=self.credential_file
+                )
+                # Clear existing client — user must go through OAuth flow
+                self.sp_client = None
+                self.content_resolver.sp_client = None
+                logger.info("Spotify credentials saved, auth manager reinitialized")
+            else:
+                self.auth_manager = None
+                self.sp_client = None
+                self.content_resolver.sp_client = None
+                logger.info("Spotify credentials cleared")
+
+            return {'success': True, 'configured': self._configured}
+        except Exception as e:
+            logger.error(f"Failed to save Spotify config: {e}")
+            return {'success': False, 'error': str(e)}
+
+    @plugs.tag
+    def get_auth_status(self) -> Dict[str, Any]:
+        """Return current authentication status
+
+        Returns:
+            Dictionary with ``authenticated``, ``has_token``, ``configured``,
+            and ``redirect_uri`` fields.
+        """
+        has_token = (self.auth_manager is not None
+                     and self.auth_manager.token_info is not None)
+        return {
+            'configured': self._configured,
+            'authenticated': self.sp_client is not None,
+            'has_token': has_token,
+            'redirect_uri': self.redirect_uri,
+        }
+
+    @plugs.tag
+    def get_auth_url(self) -> Dict[str, Any]:
+        """Return the Spotify OAuth authorization URL
+
+        Returns:
+            Dictionary with ``auth_url`` field.
+        """
+        if not self._configured or self.auth_manager is None:
+            return {'error': 'Spotify client_id / client_secret not configured'}
+        return {'auth_url': self.auth_manager.get_auth_url()}
+
+    @plugs.tag
+    def authenticate(self, auth_code: str) -> Dict[str, Any]:
+        """Complete OAuth flow with the authorization code from the redirect
+
+        Args:
+            auth_code: The ``code`` query parameter from the OAuth redirect.
+
+        Returns:
+            Dictionary with ``success`` field.
+        """
+        if not self._configured or self.auth_manager is None:
+            return {'success': False, 'error': 'Not configured'}
+        try:
+            self.auth_manager.authenticate(auth_code)
+            token = self.auth_manager.get_access_token()
+            self.sp_client = spotipy.Spotify(
+                auth=token,
+                requests_timeout=10,
+                retries=0,
+            )
+            self.content_resolver.sp_client = self.sp_client
+            # Register librespot with the account so it appears as a device
+            self._restart_librespot_with_token()
+            self._discover_device()
+            logger.info("Spotify authenticated via web UI")
+            return {'success': True}
+        except Exception as e:
+            logger.error(f"Web UI authentication failed: {e}")
+            return {'success': False, 'error': str(e)}
+
+    @plugs.tag
+    def logout(self) -> Dict[str, Any]:
+        """Clear stored token and disconnect the Spotify client
+
+        Returns:
+            Dictionary with ``success`` field.
+        """
+        try:
+            if self.auth_manager:
+                self.auth_manager.clear_token()
+            self.sp_client = None
+            self.content_resolver.sp_client = None
+            logger.info("Spotify logged out via web UI")
+            return {'success': True}
+        except Exception as e:
+            logger.error(f"Logout failed: {e}")
+            return {'success': False, 'error': str(e)}
+
+    # ------------------------------------------------------------------
+    # Search & library methods
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_search_item(item: Dict, type_key: str) -> Dict[str, Any]:
+        """Extract consistent metadata from different Spotify result shapes"""
+        result = {
+            'name': item.get('name', ''),
+            'uri': item.get('uri', ''),
+            'type': type_key,
+        }
+        # Image
+        images = item.get('images') or item.get('album', {}).get('images') or []
+        result['image_url'] = images[0]['url'] if images else None
+        # Artist(s)
+        artists = item.get('artists', [])
+        result['artist'] = ', '.join(a['name'] for a in artists) if artists else ''
+        # Owner (playlists)
+        owner = item.get('owner')
+        if owner and not result['artist']:
+            result['artist'] = owner.get('display_name', '')
+        # Description (playlists / shows)
+        result['description'] = item.get('description', '')
+        # Track/episode count
+        total = (item.get('tracks', {}) or {}).get('total')
+        if total is None:
+            total = (item.get('total_tracks')
+                     or (item.get('episodes', {}) or {}).get('total'))
+        result['total_tracks'] = total
+        return result
+
+    @plugs.tag
+    def search(self, query: str, content_type: str = 'playlist,album,track',
+               limit: int = 10) -> Dict[str, Any]:
+        """Search the Spotify catalogue
+
+        Args:
+            query: Search query string
+            content_type: Comma-separated list of types (track, album, playlist, show)
+            limit: Maximum results per type (max 10 for dev-mode apps)
+
+        Returns:
+            Dictionary with ``items`` list of normalised results.
+        """
+        self._require_client()
+        self._refresh_token_if_needed()
+        limit = min(limit, 10)
+        try:
+            raw = self.sp_client.search(q=query, type=content_type, limit=limit)
+            if not raw:
+                return {'items': [], 'error': 'Empty response from Spotify'}
+
+            items: List[Dict] = []
+            for type_key in content_type.split(','):
+                type_key = type_key.strip()
+                plural = type_key + 's'
+                for item in ((raw.get(plural) or {}).get('items') or []):
+                    if item is None:
+                        continue
+                    items.append(self._normalize_search_item(item, type_key))
+            return {'items': items}
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return {'items': [], 'error': str(e)}
+
+    @plugs.tag
+    def get_user_playlists(self, limit: int = 50,
+                           offset: int = 0) -> Dict[str, Any]:
+        """Get the authenticated user's playlists
+
+        Args:
+            limit: Maximum number of playlists
+            offset: Pagination offset
+
+        Returns:
+            Dictionary with ``items`` and ``total``.
+        """
+        self._require_client()
+        self._refresh_token_if_needed()
+        try:
+            raw = self.sp_client.current_user_playlists(limit=limit, offset=offset)
+            items = [self._normalize_search_item(p, 'playlist')
+                     for p in raw.get('items', [])]
+            return {'items': items, 'total': raw.get('total', 0)}
+        except SpotifyException as e:
+            logger.error(f"get_user_playlists failed: {e}")
+            return {'items': [], 'total': 0, 'error': str(e)}
+
+    @plugs.tag
+    def get_user_albums(self, limit: int = 50,
+                        offset: int = 0) -> Dict[str, Any]:
+        """Get the authenticated user's saved albums
+
+        Args:
+            limit: Maximum number of albums
+            offset: Pagination offset
+
+        Returns:
+            Dictionary with ``items`` and ``total``.
+        """
+        self._require_client()
+        self._refresh_token_if_needed()
+        try:
+            raw = self.sp_client.current_user_saved_albums(limit=limit, offset=offset)
+            items = [self._normalize_search_item(a['album'], 'album')
+                     for a in raw.get('items', [])]
+            return {'items': items, 'total': raw.get('total', 0)}
+        except SpotifyException as e:
+            logger.error(f"get_user_albums failed: {e}")
+            return {'items': [], 'total': 0, 'error': str(e)}
+
+    @plugs.tag
+    def get_content_details(self, uri: str) -> Dict[str, Any]:
+        """Get full metadata for a Spotify URI
+
+        Used by the card-registration component to display content info.
+
+        Args:
+            uri: Spotify URI (playlist, album, track, show, episode)
+
+        Returns:
+            Dictionary with ``name``, ``image_url``, ``type``, etc.
+        """
+        self._require_client()
+        self._refresh_token_if_needed()
+        try:
+            uri = self.content_resolver._normalize_uri(uri)
+            content_type, content_id = self.content_resolver._parse_uri(uri)
+
+            if content_type == 'playlist':
+                data = self.sp_client.playlist(content_id)
+            elif content_type == 'album':
+                data = self.sp_client.album(content_id)
+            elif content_type == 'track':
+                data = self.sp_client.track(content_id)
+            elif content_type == 'show':
+                data = self.sp_client.show(content_id)
+            elif content_type == 'episode':
+                data = self.sp_client.episode(content_id)
+            else:
+                return {'error': f'Unsupported type: {content_type}'}
+
+            result = self._normalize_search_item(data, content_type)
+            return result
+        except SpotifyException as e:
+            logger.error(f"get_content_details failed: {e}")
+            return {'error': str(e)}
+        except ValueError as e:
+            return {'error': str(e)}
+
+    # ------------------------------------------------------------------
+    # Playback methods
+    # ------------------------------------------------------------------
+
     @plugs.tag
     def play(self):
         """Resume playback"""
         try:
+            self._require_client()
             self._refresh_token_if_needed()
             if not self._ensure_device():
                 logger.error("No Spotify device available")
                 return
 
+            self._activate()
             with self.lock:
                 device_id = self.player_status['device_id']
                 # Resume current playback
@@ -221,6 +717,7 @@ class PlayerSpotify:
     def stop(self):
         """Stop playback"""
         try:
+            self._require_client()
             self._refresh_token_if_needed()
             if not self._ensure_device():
                 return
@@ -245,6 +742,7 @@ class PlayerSpotify:
             state: 1 to pause, 0 to resume
         """
         try:
+            self._require_client()
             self._refresh_token_if_needed()
             if not self._ensure_device():
                 return
@@ -279,6 +777,7 @@ class PlayerSpotify:
     def next(self):
         """Skip to next track"""
         try:
+            self._require_client()
             self._refresh_token_if_needed()
             if not self._ensure_device():
                 return
@@ -294,6 +793,7 @@ class PlayerSpotify:
     def prev(self):
         """Skip to previous track"""
         try:
+            self._require_client()
             self._refresh_token_if_needed()
             if not self._ensure_device():
                 return
@@ -314,6 +814,7 @@ class PlayerSpotify:
             new_time: Position in seconds
         """
         try:
+            self._require_client()
             self._refresh_token_if_needed()
             if not self._ensure_device():
                 return
@@ -427,9 +928,11 @@ class PlayerSpotify:
         Play Spotify content by URI
 
         Args:
-            uri: Spotify URI (spotify:track:*, spotify:playlist:*, spotify:album:*, spotify:artist:*)
+            uri: Spotify URI (spotify:track:*, spotify:playlist:*, spotify:album:*,
+                 spotify:show:*, spotify:episode:*)
         """
         try:
+            self._require_client()
             self._refresh_token_if_needed()
             if not self._ensure_device():
                 logger.error("No Spotify device available")
@@ -437,29 +940,35 @@ class PlayerSpotify:
 
             logger.info(f"Playing content: {uri}")
 
-            # Resolve URI to track URIs
-            track_uris = self.content_resolver.resolve_uri(uri)
-            if not track_uris:
-                logger.error(f"Failed to resolve URI: {uri}")
-                return
+            self._activate()
+            normalized = self.content_resolver._normalize_uri(uri)
+            content_type, _ = self.content_resolver._parse_uri(normalized)
 
             with self.lock:
                 device_id = self.player_status['device_id']
 
-                # Start playback
-                if uri.startswith('spotify:track:'):
-                    # Single track
-                    self.sp_client.start_playback(device_id=device_id, uris=track_uris)
+                if content_type in ('show', 'episode'):
+                    # Shows/episodes: use context_uri so Spotify handles
+                    # episode ordering and resume natively
+                    self.sp_client.start_playback(
+                        device_id=device_id, context_uri=normalized)
+                elif content_type == 'track':
+                    self.sp_client.start_playback(
+                        device_id=device_id, uris=[normalized])
                 else:
-                    # Playlist, album, or artist
-                    self.sp_client.start_playback(device_id=device_id, uris=track_uris)
+                    # playlist, album — resolve to track URIs
+                    track_uris = self.content_resolver.resolve_uri(uri)
+                    if not track_uris:
+                        logger.error(f"Failed to resolve URI: {uri}")
+                        return
+                    self.sp_client.start_playback(
+                        device_id=device_id, uris=track_uris)
 
                 self.player_status['state'] = 'playing'
                 self.player_status['last_played_uri'] = uri
-                self.player_status['current_queue'] = track_uris
                 self._save_status()
 
-                logger.info(f"Started playback of {len(track_uris)} tracks")
+                logger.info(f"Started playback of {uri}")
         except SpotifyException as e:
             logger.error(f"Play content failed: {e}")
         except Exception as e:
@@ -486,6 +995,34 @@ class PlayerSpotify:
         except Exception as e:
             logger.error(f"Play card failed: {e}")
 
+    def _fetch_and_update_status(self):
+        """Fetch current playback from the Spotify API and update cached status.
+
+        Lets exceptions (including SpotifyException 429) propagate so callers
+        can decide how to handle them.
+        """
+        self._refresh_token_if_needed()
+        current = self.sp_client.current_playback()
+
+        if current and current.get('item'):
+            track = current['item']
+            self.player_status['state'] = 'playing' if current['is_playing'] else 'paused'
+            self.player_status['position_ms'] = current.get('progress_ms', 0)
+            self.player_status['shuffle'] = current.get('shuffle_state', False)
+            self.player_status['repeat'] = current.get('repeat_state', 'off')
+            self.player_status['current_track'] = {
+                'name': track['name'],
+                'artist': ', '.join([a['name'] for a in track['artists']]),
+                'album': track['album']['name'],
+                'duration_ms': track['duration_ms'],
+                'uri': track['uri'],
+                'artwork_url': track['album']['images'][0]['url'] if track['album']['images'] else None
+            }
+        else:
+            # No active playback
+            if self.player_status.get('state') != 'stopped':
+                self.player_status['state'] = 'stopped'
+
     @plugs.tag
     def playerstatus(self) -> Dict[str, Any]:
         """
@@ -494,36 +1031,13 @@ class PlayerSpotify:
         Returns:
             Dictionary with current playback state
         """
+        if not self.sp_client:
+            return self.player_status.copy()
         try:
-            self._refresh_token_if_needed()
-
-            with self.lock:
-                # Get current playback from Spotify API
-                current = self.sp_client.current_playback()
-
-                if current and current.get('item'):
-                    track = current['item']
-                    self.player_status['state'] = 'playing' if current['is_playing'] else 'paused'
-                    self.player_status['position_ms'] = current.get('progress_ms', 0)
-                    self.player_status['shuffle'] = current.get('shuffle_state', False)
-                    self.player_status['repeat'] = current.get('repeat_state', 'off')
-                    self.player_status['current_track'] = {
-                        'name': track['name'],
-                        'artist': ', '.join([a['name'] for a in track['artists']]),
-                        'album': track['album']['name'],
-                        'duration_ms': track['duration_ms'],
-                        'uri': track['uri'],
-                        'artwork_url': track['album']['images'][0]['url'] if track['album']['images'] else None
-                    }
-                else:
-                    # No active playback
-                    if self.player_status.get('state') != 'stopped':
-                        self.player_status['state'] = 'stopped'
-
-                return self.player_status.copy()
+            self._fetch_and_update_status()
         except Exception as e:
             logger.debug(f"Playerstatus error: {e}")
-            return self.player_status.copy()
+        return self.player_status.copy()
 
     @plugs.tag
     def playlistinfo(self) -> List[Dict[str, Any]]:
@@ -533,6 +1047,8 @@ class PlayerSpotify:
         Returns:
             List of tracks in current queue
         """
+        if not self.sp_client:
+            return []
         try:
             self._refresh_token_if_needed()
 

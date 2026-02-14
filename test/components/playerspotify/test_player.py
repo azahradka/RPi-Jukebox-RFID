@@ -10,26 +10,22 @@ from unittest.mock import MagicMock, patch
 
 
 @pytest.fixture
-def mock_config():
-    """Mock jukebox configuration"""
-    with patch('components.playerspotify.jukebox.cfghandler.get_handler') as mock_cfg:
-        cfg_handler = MagicMock()
-        # Set default configuration values
-        cfg_handler.getn.side_effect = lambda *args, **kwargs: {
-            ('playerspotify', 'client_id'): 'test_client_id',
-            ('playerspotify', 'client_secret'): 'test_client_secret',
-            ('playerspotify', 'redirect_uri'): 'http://localhost:8888/callback',
-            ('playerspotify', 'device_name'): 'Phoniebox',
-            ('playerspotify', 'credential_file'): '/tmp/test_creds.json',
-            ('playerspotify', 'status_file'): '/tmp/test_status.json',
-            ('playerspotify', 'cache_enabled'): True,
-            ('playerspotify', 'cache_path'): '/tmp/test_cache/',
-            ('playerspotify', 'artist_track_limit'): 20,
-            ('playerspotify', 'second_swipe_action', 'alias'): 'toggle'
-        }.get(tuple(args), kwargs.get('default'))
+def cfg_mock():
+    """Mock jukebox configuration via module-level cfg object"""
+    cfg_handler = MagicMock()
+    cfg_handler.getn.side_effect = lambda *args, **kwargs: {
+        ('playerspotify', 'client_id'): 'test_client_id',
+        ('playerspotify', 'client_secret'): 'test_client_secret',
+        ('playerspotify', 'redirect_uri'): 'http://127.0.0.1:8888/callback',
+        ('playerspotify', 'device_name'): 'Phoniebox',
+        ('playerspotify', 'credential_file'): '/tmp/test_creds.json',
+        ('playerspotify', 'status_file'): '/tmp/test_status.json',
+        ('playerspotify', 'cache_enabled'): True,
+        ('playerspotify', 'cache_path'): '/tmp/test_cache/',
+        ('playerspotify', 'second_swipe_action', 'alias'): 'toggle'
+    }.get(tuple(args), kwargs.get('default'))
 
-        mock_cfg.return_value = cfg_handler
-        yield cfg_handler
+    return cfg_handler
 
 
 @pytest.fixture
@@ -95,16 +91,6 @@ def mock_sp_client():
 
 
 @pytest.fixture
-def mock_nv_manager():
-    """Mock NvManager"""
-    with patch('components.playerspotify.nv_manager') as mock_nvm:
-        nvm_instance = MagicMock()
-        nvm_instance.load.return_value = None
-        mock_nvm.return_value = nvm_instance
-        yield nvm_instance
-
-
-@pytest.fixture
 def mock_content_resolver():
     """Mock content resolver"""
     with patch('components.playerspotify.SpotifyContentResolver') as mock_resolver:
@@ -119,21 +105,23 @@ def mock_content_resolver():
 
 
 @pytest.fixture
-def player(mock_config, mock_auth_manager, mock_sp_client, mock_nv_manager, mock_content_resolver):
+def player(cfg_mock, mock_auth_manager, mock_sp_client, mock_content_resolver):
     """Create PlayerSpotify instance with mocked dependencies"""
-    with patch('components.playerspotify.spotipy.Spotify', return_value=mock_sp_client):
-        with patch('components.playerspotify.publishing.get_publisher'):
-            from components.playerspotify import PlayerSpotify
+    with patch('components.playerspotify.cfg', cfg_mock):
+        with patch('components.playerspotify.spotipy.Spotify', return_value=mock_sp_client):
+            with patch('components.playerspotify.publishing.get_publisher'):
+                with patch('components.playerspotify.os.path.exists', return_value=False):
+                    from components.playerspotify import PlayerSpotify
 
-            # Create player
-            player = PlayerSpotify()
+                    # Create player
+                    player = PlayerSpotify()
 
-            # Stop background thread to avoid cleanup issues
-            player.status_thread_stop.set()
-            if player.status_thread.is_alive():
-                player.status_thread.join(timeout=1)
+                    # Stop background thread to avoid cleanup issues
+                    player.status_thread_stop.set()
+                    if player.status_thread.is_alive():
+                        player.status_thread.join(timeout=1)
 
-            yield player
+                    yield player
 
 
 def test_player_initialization(player):
@@ -372,3 +360,13 @@ def test_device_not_found(player, mock_sp_client):
     # Should handle gracefully
     player.play()
     # Should not crash, just log error
+
+
+def test_play_content_artist_uri_fails(player, mock_sp_client, mock_content_resolver):
+    """Test that artist URIs return empty (API endpoint removed Feb 2026)"""
+    mock_content_resolver.resolve_uri.return_value = []
+
+    player.play_content('spotify:artist:0OdUWJ0sBjDrqHygGUXeCF')
+
+    # Should not start playback since resolve returns empty
+    mock_sp_client.start_playback.assert_not_called()

@@ -53,3 +53,21 @@ def get_music_library_path():
     if _MUSIC_LIBRARY_PATH is None:
         _MUSIC_LIBRARY_PATH = MusicLibPath()
     return _MUSIC_LIBRARY_PATH.music_library_path
+
+
+# ---------------------------------------------------------------------------
+# Active player tracking
+# ---------------------------------------------------------------------------
+# Only the active player should publish to the 'playerstatus' topic.
+# Valid values: 'mpd', 'spotify', None
+_active_player: Optional[str] = 'mpd'
+
+
+def get_active_player() -> Optional[str]:
+    return _active_player
+
+
+def set_active_player(player_name: Optional[str]):
+    global _active_player
+    _active_player = player_name
+    logger.info(f"Active player set to: {player_name}")

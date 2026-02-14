@@ -30,6 +30,11 @@ server {
 			default_type text/plain;
 	}
 
+	# Spotify OAuth callback - redirect to web app with auth code
+	location = /spotify-callback {
+		return 302 /#/settings?spotify_code=$arg_code&spotify_state=$arg_state;
+	}
+
 	location @buildwebui {
  		 root %%INSTALLATION_PATH%%/resources/html;
 		 try_files /runbuildui.html =404;

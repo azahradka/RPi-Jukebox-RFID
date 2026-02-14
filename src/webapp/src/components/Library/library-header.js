@@ -19,6 +19,7 @@ import {
 import SearchIcon from '@mui/icons-material/Search';
 import AlbumIcon from '@mui/icons-material/Album';
 import FolderIcon from '@mui/icons-material/Folder';
+import GraphicEqIcon from '@mui/icons-material/GraphicEq';
 import PodcastsIcon from '@mui/icons-material/Podcasts';
 
 const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
@@ -29,6 +30,7 @@ const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
   const [showSearchInput, setShowSearchInput] = useState(false);
 
   const getCurrentView = () => {
+    if (view.startsWith('spotify')) return 'spotify';
     if (view.startsWith('podcasts')) return 'podcasts';
     if (view.startsWith('folders')) return 'folders';
     return 'albums';
@@ -47,6 +49,8 @@ const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
 
   const currentView = getCurrentView();
   const isPodcastsView = currentView === 'podcasts';
+  const isSpotifyView = currentView === 'spotify';
+  const hideLocalSearch = isPodcastsView || isSpotifyView;
 
   return (
     <Grid container sx={{ marginBottom: '8px' }}>
@@ -54,8 +58,8 @@ const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
         xs={12}
         sx={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', width: '100%' }}
       >
-        {/* Search is only for music (albums/folders), not podcasts */}
-        {!isPodcastsView && (
+        {/* Search is only for music (albums/folders), not podcasts/spotify */}
+        {!hideLocalSearch && (
           <IconButton
             aria-label={iconLabel}
             onClick={() => setShowSearchInput(!showSearchInput)}
@@ -65,9 +69,9 @@ const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
             <SearchIcon />
           </IconButton>
         )}
-        {isPodcastsView && <div style={{ width: 40 }} />}
+        {hideLocalSearch && <div style={{ width: 40 }} />}
 
-        {showSearchInput && !isPodcastsView &&
+        {showSearchInput && !hideLocalSearch &&
           <TextField
             id="library-search"
             label={t('library.header.search-label')}
@@ -82,7 +86,7 @@ const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
             }}
           />
         }
-        {(!showSearchInput || isPodcastsView) &&
+        {(!showSearchInput || hideLocalSearch) &&
           <Stack
             alignItems="center"
             direction="row"
@@ -111,6 +115,12 @@ const LibraryHeader = ({ handleMusicFilter, musicFilter }) => {
                 <PodcastsIcon sx={{ mr: 0.5, fontSize: '1.2rem' }} />
                 <Typography variant="body2">
                   {t('library.header.podcasts', 'Podcasts')}
+                </Typography>
+              </ToggleButton>
+              <ToggleButton value="spotify" aria-label={t('library.header.spotify', 'Spotify')}>
+                <GraphicEqIcon sx={{ mr: 0.5, fontSize: '1.2rem' }} />
+                <Typography variant="body2">
+                  {t('library.header.spotify', 'Spotify')}
                 </Typography>
               </ToggleButton>
             </ToggleButtonGroup>

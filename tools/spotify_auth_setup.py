@@ -15,7 +15,7 @@ Prerequisites:
 1. Spotify Premium account
 2. Spotify Developer App created at https://developer.spotify.com/dashboard
 3. Client ID and Client Secret from Spotify Developer Dashboard
-4. Redirect URI configured in Spotify app: http://phoniebox.local:8888/callback
+4. Redirect URI configured in Spotify app: http://127.0.0.1:8888/callback
 5. Configuration in jukebox.yaml with client_id and client_secret
 
 The script will:
@@ -38,12 +38,30 @@ import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-# Add src/jukebox to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src' / 'jukebox'))
+# Project root
+PROJECT_ROOT = Path(__file__).parent.parent
 
-import jukebox.cfghandler  # noqa: E402
-from components.playerspotify.spotify_auth import SpotifyAuthManager  # noqa: E402
+# Import SpotifyAuthManager directly to avoid triggering __init__.py plugin registration
+import importlib.util  # noqa: E402
+_auth_spec = importlib.util.spec_from_file_location(
+    'spotify_auth',
+    str(PROJECT_ROOT / 'src' / 'jukebox' / 'components' / 'playerspotify' / 'spotify_auth.py')
+)
+_auth_module = importlib.util.module_from_spec(_auth_spec)
+_auth_spec.loader.exec_module(_auth_module)
+SpotifyAuthManager = _auth_module.SpotifyAuthManager
+
 import spotipy  # noqa: E402
+
+try:
+    from ruamel.yaml import YAML
+    def _load_yaml(path):
+        return YAML().load(open(path))
+except ImportError:
+    import yaml
+    def _load_yaml(path):  # noqa: F811
+        with open(path) as f:
+            return yaml.safe_load(f)
 
 # Configure logging
 logging.basicConfig(
@@ -147,23 +165,34 @@ def main():
     print("Phoniebox Spotify Authentication Setup")
     print("=" * 60 + "\n")  # noqa: W503
 
-    # Load jukebox configuration
-    try:
-        logger.info("Loading jukebox configuration...")
-        cfg = jukebox.cfghandler.get_handler('jukebox')
-    except Exception as e:
-        logger.error(f"Failed to load jukebox configuration: {e}")
+    # Load jukebox configuration directly from YAML
+    # (we don't use jukebox.cfghandler because it requires the daemon context)
+    config_path = PROJECT_ROOT / 'shared' / 'settings' / 'jukebox.yaml'
+    if not config_path.exists():
+        logger.error(f"Configuration file not found: {config_path}")
         logger.error("Make sure you're running from the RPi-Jukebox-RFID directory")
         logger.error("Usage: cd ~/RPi-Jukebox-RFID && python tools/spotify_auth_setup.py")
         sys.exit(1)
 
+    try:
+        logger.info(f"Loading configuration from {config_path}...")
+        cfg = _load_yaml(config_path)
+    except Exception as e:
+        logger.error(f"Failed to load jukebox configuration: {e}")
+        sys.exit(1)
+
     # Get Spotify credentials from config
-    client_id = cfg.getn('playerspotify', 'client_id', default='')
-    client_secret = cfg.getn('playerspotify', 'client_secret', default='')
-    redirect_uri = cfg.getn('playerspotify', 'redirect_uri',
-                            default='http://phoniebox.local:8888/callback')
-    credential_file = cfg.getn('playerspotify', 'credential_file',
-                               default='../../shared/settings/spotify_credentials.json')
+    spotify_cfg = cfg.get('playerspotify', {})
+    client_id = spotify_cfg.get('client_id', '')
+    client_secret = spotify_cfg.get('client_secret', '')
+    redirect_uri = spotify_cfg.get('redirect_uri',
+                                   'http://127.0.0.1:8888/callback')
+    credential_file = spotify_cfg.get('credential_file',
+                                      '../../shared/settings/spotify_credentials.json')
+
+    # Resolve relative credential_file path (relative to src/jukebox/components/playerspotify/)
+    if credential_file.startswith('../../'):
+        credential_file = str(PROJECT_ROOT / credential_file.replace('../../', ''))
 
     # Validate configuration
     if not client_id or not client_secret:

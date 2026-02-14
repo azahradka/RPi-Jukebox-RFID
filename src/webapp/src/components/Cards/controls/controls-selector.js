@@ -9,6 +9,7 @@ import {
 import SelectCommandAliases from './select-command-aliases';
 import SelectPlayMusic from './actions/play-music';
 import SelectPlayPodcast from './actions/play-podcast';
+import SelectPlaySpotify from './actions/play-spotify';
 import SelectTimers from './actions/timers';
 import SelectAudio from './actions/audio';
 import { buildActionData } from '../utils';
@@ -20,6 +21,7 @@ const ControlsSelector = ({
   setActionData,
   cardId,
   podcastMetadata,
+  spotifyMetadata,
 }) => {
   const { t } = useTranslation();
 
@@ -75,6 +77,14 @@ const ControlsSelector = ({
             actionData={actionData}
             cardId={cardId}
             podcastMetadata={podcastMetadata}
+          />
+        }
+
+        {actionData.action === 'play_spotify' &&
+          <SelectPlaySpotify
+            actionData={actionData}
+            cardId={cardId}
+            spotifyMetadata={spotifyMetadata}
           />
         }
 

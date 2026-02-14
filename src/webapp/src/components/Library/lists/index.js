@@ -16,6 +16,7 @@ import Albums from './albums';
 import SongList from './albums/song-list';
 import Folders from './folders';
 import Podcasts from './podcasts';
+import Spotify from './spotify';
 import LibraryHeader from "../library-header";
 import SelectorHeader from "../selector-header";
 
@@ -39,6 +40,19 @@ const LibraryLists = () => {
       registerCard: {
         actionData,
         cardId,
+      },
+    };
+
+    navigate('/cards/register', { state });
+  };
+
+  const registerSpotifyToCard = (uri, spotifyMetadata) => {
+    const actionData = buildActionData('play_spotify', 'play_spotify_card', [uri]);
+    const state = {
+      registerCard: {
+        actionData,
+        cardId,
+        spotifyMetadata,
       },
     };
 
@@ -94,6 +108,11 @@ const LibraryLists = () => {
             <Route
               path="podcasts"
               element={<Podcasts />}
+              exact
+            />
+            <Route
+              path="spotify"
+              element={<Spotify />}
               exact
             />
           </Routes>

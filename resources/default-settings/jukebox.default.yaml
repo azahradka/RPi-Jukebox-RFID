@@ -102,7 +102,7 @@ playerspotify:
   # Get credentials from: https://developer.spotify.com/dashboard
   client_id: ''
   client_secret: ''
-  redirect_uri: 'http://phoniebox.local:8888/callback'
+  redirect_uri: 'http://127.0.0.1:8888/callback'
   credential_file: ../../shared/settings/spotify_credentials.json
   status_file: ../../shared/settings/spotify_player_status.json
   # Device name must match librespot configuration
@@ -118,8 +118,6 @@ playerspotify:
   #   plugin: ctrl
   #   method: play_card
   #   args: ['fallback/folder']
-  # Maximum number of tracks to fetch for artist URIs
-  artist_track_limit: 20
   # Content caching configuration
   cache_enabled: true
   cache_path: ../../shared/cache/spotify/
