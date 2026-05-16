@@ -602,6 +602,7 @@ class PlayerMPD:
 
     @plugs.tag
     def play_single(self, song_url):
+        self._activate_mpd()
         with self.mpd_lock:
             self.mpd_client.clear()
             self.mpd_client.addid(song_url)

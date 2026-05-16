@@ -985,8 +985,10 @@ class PlayerSpotify:
         try:
             last_uri = self.player_status.get('last_played_uri')
 
-            # Second swipe detection
-            if last_uri == uri:
+            # Second swipe detection - only if Spotify is the active player.
+            # When switching FROM another player (podcast, MPD), always do
+            # a fresh play_content so the track actually starts.
+            if last_uri == uri and player_module.get_active_player() == 'spotify':
                 logger.info(f"Second swipe detected for: {uri}")
                 self.second_swipe_action()
             else:
