@@ -41,23 +41,34 @@ class ErrorBoundary extends React.Component {
     if (!error) {
       return this.props.children;
     }
+    // Phase 4: page-scoped boundaries pass ``scope`` so each fallback
+    // labels which page failed (Player / Library / Cards / Settings)
+    // while still letting the user retry that page in isolation. The
+    // top-level (unscoped) boundary keeps the original heading and
+    // styling so existing behaviour is preserved.
+    const { scope } = this.props;
+    const testId = scope ? `ui-error-boundary-${scope}` : 'ui-error-boundary';
+    const retryTestId = scope
+      ? `ui-error-boundary-retry-${scope}`
+      : 'ui-error-boundary-retry';
+    const heading = scope ? `Error in ${scope}` : 'Something went wrong';
     return (
-      <Box sx={{ p: 4, maxWidth: 640, mx: 'auto' }}>
+      <Box sx={{ p: scope ? 2 : 4, maxWidth: 640, mx: 'auto' }}>
         <Alert
           severity="error"
-          data-testid="ui-error-boundary"
+          data-testid={testId}
           action={
             <Button
               color="inherit"
               size="small"
-              data-testid="ui-error-boundary-retry"
+              data-testid={retryTestId}
               onClick={this._handleRetry}
             >
               Retry
             </Button>
           }
         >
-          <AlertTitle>Something went wrong</AlertTitle>
+          <AlertTitle>{heading}</AlertTitle>
           {error.message || String(error)}
         </Alert>
       </Box>
