@@ -1,0 +1,69 @@
+/**
+ * Mock for the ZMQ sockets module used in React tests.
+ *
+ * Usage in a test file:
+ *
+ *     import {
+ *       __mockSocketLog,
+ *       __setMockResponse,
+ *       __resetMockSocket,
+ *     } from '../../test-utils/mockSocket';
+ *     jest.mock('../../sockets', () => require('../../test-utils/mockSocket'));
+ *
+ * `socketRequest` returns the configured response for a given
+ * `package.plugin.method` key, or `undefined` if none configured.
+ * `initSockets` is a no-op.
+ *
+ * Tests should call `__resetMockSocket()` in `beforeEach` to clear state.
+ */
+
+const __mockSocketLog = [];
+const __mockSocketResponses = {};
+const __mockSubscribers = [];
+
+const __setMockResponse = (key, response) => {
+  __mockSocketResponses[key] = response;
+};
+
+const __resetMockSocket = () => {
+  __mockSocketLog.length = 0;
+  __mockSubscribers.length = 0;
+  Object.keys(__mockSocketResponses).forEach((k) => delete __mockSocketResponses[k]);
+};
+
+const socketRequest = jest.fn((_package, plugin, method, kwargs) => {
+  const key = [_package, plugin, method].filter(Boolean).join('.');
+  __mockSocketLog.push({ key, kwargs });
+  if (key in __mockSocketResponses) {
+    const resp = __mockSocketResponses[key];
+    return resp instanceof Error ? Promise.reject(resp) : Promise.resolve(resp);
+  }
+  return Promise.resolve(undefined);
+});
+
+const initSockets = jest.fn(({ setState, events } = {}) => {
+  __mockSubscribers.push({ setState, events });
+});
+
+/**
+ * Simulate a pubsub push from the backend.
+ * Calls every subscriber's setState with the given topic/data, matching
+ * how the real socketEvents handler in src/sockets/index.js works.
+ */
+const __publishMockMessage = (topic, data) => {
+  __mockSubscribers.forEach(({ setState, events }) => {
+    if (!events || events.includes(topic)) {
+      setState((state) => ({ ...state, [topic]: data }));
+    }
+  });
+};
+
+module.exports = {
+  socketRequest,
+  initSockets,
+  __mockSocketLog,
+  __mockSocketResponses,
+  __setMockResponse,
+  __resetMockSocket,
+  __publishMockMessage,
+};
