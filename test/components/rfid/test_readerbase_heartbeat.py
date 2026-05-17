@@ -63,8 +63,10 @@ def test_heartbeat_logs_while_read_card_blocked(caplog):
     Reversion check: revert the ``_heartbeat_thread`` machinery and
     this test sees no heartbeat logs within the deadline.
     """
-    # Use a fast timeout for the test.
-    reader = _FakeReader(wait_for_tag_timeout_s=0.1)
+    # The floor for wait_for_tag_timeout_s is 1.0s. Allow up to 5s
+    # for the heartbeat to fire — generous to keep the test stable
+    # when the full suite runs under load.
+    reader = _FakeReader(wait_for_tag_timeout_s=1.0)
     caplog.set_level(logging.DEBUG, logger='test.fakereader')
 
     def call_read():
@@ -75,14 +77,14 @@ def test_heartbeat_logs_while_read_card_blocked(caplog):
     t = threading.Thread(target=call_read, daemon=True)
     t.start()
     # Wait for read_card to be in the blocking section
-    assert reader.read_card_started.wait(timeout=1.0)
-    # Give the heartbeat a few intervals to fire
-    deadline = time.monotonic() + 1.0
+    assert reader.read_card_started.wait(timeout=3.0)
+    # Give the heartbeat enough time to fire at least once
+    deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         if any('still waiting for tag' in r.getMessage()
                for r in caplog.records):
             break
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     matched = [r for r in caplog.records
                if 'still waiting for tag' in r.getMessage()]
@@ -92,7 +94,7 @@ def test_heartbeat_logs_while_read_card_blocked(caplog):
     )
     # Release read_card so the thread exits cleanly
     reader.unblock.set()
-    t.join(timeout=2.0)
+    t.join(timeout=3.0)
 
 
 def test_heartbeat_does_not_interrupt_read_card():
@@ -102,7 +104,9 @@ def test_heartbeat_does_not_interrupt_read_card():
     cancelling the read, this test fails because read_card returns
     early without our unblock signal.
     """
-    reader = _FakeReader(wait_for_tag_timeout_s=0.05)
+    # Floor is 1.0s; wait 1.5s to see at least one heartbeat fire
+    # without read_card returning.
+    reader = _FakeReader(wait_for_tag_timeout_s=1.0)
     finished = threading.Event()
     result = []
 
@@ -113,16 +117,16 @@ def test_heartbeat_does_not_interrupt_read_card():
 
     t = threading.Thread(target=call_read, daemon=True)
     t.start()
-    assert reader.read_card_started.wait(timeout=1.0)
-    # Wait long enough for several heartbeat intervals to fire
-    time.sleep(0.3)
+    assert reader.read_card_started.wait(timeout=3.0)
+    # Wait long enough for at least one heartbeat interval to fire
+    time.sleep(1.5)
     assert not finished.is_set(), (
         "read_card returned before the test released it; the watchdog "
         "may have interrupted it (it must not)."
     )
     # Now unblock and confirm result comes through
     reader.unblock.set()
-    assert finished.wait(timeout=2.0)
+    assert finished.wait(timeout=3.0)
     assert result == ['CARD-1']
 
 
@@ -141,13 +145,15 @@ def test_heartbeat_floor_at_one_second():
 def test_heartbeat_inactive_outside_read_card(caplog):
     """Between iterations, the heartbeat must not log — the reader is
     not blocked on a tag wait, it's the runner's between-iter sleep."""
-    reader = _FakeReader(wait_for_tag_timeout_s=0.05)
+    # Floor is 1.0s; wait > 1.0s so the heartbeat thread definitely
+    # checked the active flag at least once.
+    reader = _FakeReader(wait_for_tag_timeout_s=1.0)
     caplog.set_level(logging.DEBUG, logger='test.fakereader')
 
     with reader:
         # Don't enter read_card — just hold the context manager and
-        # wait several intervals.
-        time.sleep(0.2)
+        # wait past one heartbeat interval.
+        time.sleep(1.3)
 
     matched = [r for r in caplog.records
                if 'still waiting for tag' in r.getMessage()]

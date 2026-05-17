@@ -37,6 +37,19 @@ from typing import Dict, Any, List, Tuple
 import spotipy
 from spotipy.exceptions import SpotifyException
 
+import jukebox.cfghandler
+import jukebox.plugs as plugs
+import jukebox.publishing as publishing
+from jukebox.utils.atomic_io import atomic_write_json_safe
+from components.player.coordinator import get_coordinator
+from .spotify_auth import SpotifyAuthManager
+from .content_resolver import SpotifyContentResolver
+from .swipe_decision import (
+    SpotifySwipeContext,
+    SpotifySwipeDecision,
+    decide_spotify_swipe,
+)
+
 
 class BackoffPolicy(enum.Enum):
     """How :meth:`PlayerSpotify._apply_error_backoff` should treat an interval.
@@ -60,18 +73,6 @@ class BackoffPolicy(enum.Enum):
     RETRY_AFTER = 'retry_after'
     EXPONENTIAL = 'exponential'
 
-import jukebox.cfghandler
-import jukebox.plugs as plugs
-import jukebox.publishing as publishing
-from jukebox.utils.atomic_io import atomic_write_json_safe
-from components.player.coordinator import get_coordinator
-from .spotify_auth import SpotifyAuthManager
-from .content_resolver import SpotifyContentResolver
-from .swipe_decision import (
-    SpotifySwipeContext,
-    SpotifySwipeDecision,
-    decide_spotify_swipe,
-)
 
 logger = logging.getLogger('jb.PlayerSpotify')
 cfg = jukebox.cfghandler.get_handler('jukebox')

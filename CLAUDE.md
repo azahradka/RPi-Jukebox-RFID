@@ -38,7 +38,7 @@ Reference the meta-plan; do not re-derive scope. End-of-phase: open PR, update `
 | 4 | Web UI quick wins | not started | |
 | 5a | Unified RPC contract (single source of truth) | not started | |
 | 5b | UI monolith breakups + socket pooling | not started | |
-| 6 | Core framework polish (plugs/daemon/cfg validation) | not started | |
+| 6 | Core framework polish (plugs/daemon/cfg validation) | in progress | PR open, awaiting review |
 | 7 | Dev workflow (auto-sync, local smoke harness) | not started | |
 
 **Status values:** `not started` → `in progress` → `done YYYY-MM-DD` → `blocked: <reason>`.
@@ -176,6 +176,31 @@ python -m pip install --no-cache-dir -r requirements.txt
 # Install Web UI dependencies (first time or after package.json changes)
 cd src/webapp && npm install
 ```
+
+### `PHONIEBOX_HOME` env var (Phase 6)
+
+`jukebox.utils.paths` resolves all relative configuration paths under
+a single anchor instead of the cwd. Resolution order:
+
+1. `$PHONIEBOX_HOME` environment variable (if set).
+2. Walk up from the module to the directory containing
+   `src/jukebox/` (the production repo root).
+
+Set `PHONIEBOX_HOME` only when running the daemon from a non-standard
+location (e.g. tests, alternative installs, a systemd unit that
+should be explicit). For a normal checkout — `/home/boxadmin/RPi-Jukebox-RFID`
+on the RPi or `~/Documents/Projects/phoniebox/src/RPi-Jukebox-RFID`
+on a dev machine — the walk-up fallback handles it.
+
+Example (alternative install root):
+
+```bash
+export PHONIEBOX_HOME=/opt/phoniebox
+systemctl --user restart jukebox-daemon
+```
+
+`cfghandler.load_yaml` and `cfghandler.write_yaml` honour the anchor
+automatically. Absolute paths pass through unchanged.
 
 ### Running
 

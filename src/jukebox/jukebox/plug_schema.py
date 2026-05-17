@@ -43,7 +43,7 @@ as a callable ``(cfg_section) -> None`` that raises
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger('jb.plugin.schema')
 
