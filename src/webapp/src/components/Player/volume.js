@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Grid from '@mui/material/Grid';
@@ -10,14 +10,13 @@ import VolumeOffIcon from '@mui/icons-material/VolumeOff';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import { useTheme } from '@mui/material/styles';
 
-import PubSubContext from '../../context/pubsub/context';
+import useSubscription from '../../hooks/useSubscription';
 import request from '../../utils/request';
 
 const Volume = () => {
   const theme = useTheme();
   const { t } = useTranslation();
-  const { state } = useContext(PubSubContext);
-  const { 'volume.level': { volume, mute } = {} } = state;
+  const { volume, mute } = useSubscription('volume.level') || {};
 
   const [isChangingVolume, setIsChangingVolume] = useState(false);
   const [_volume, setVolume] = useState(0);
