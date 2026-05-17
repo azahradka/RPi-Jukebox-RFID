@@ -208,7 +208,14 @@ class MPDStateStore:
 
     @property
     def audio_folder_status(self) -> Dict[str, Dict[str, Any]]:
-        """Direct reference to the ``audio_folder_status`` sub-dict."""
+        """Direct reference to the ``audio_folder_status`` sub-dict.
+
+        Returns a *mutable reference* to the live dict — callers that
+        mutate it must hold ``state_lock`` themselves. Mirrors the
+        ``player_status`` property's contract. Used by the poll-thread
+        path where the lock is already held around a multi-field merge,
+        and by ``ensure_folder_entry`` which manages the lock internally.
+        """
         return self.music_player_status['audio_folder_status']
 
     def last_played_folder(self) -> str:

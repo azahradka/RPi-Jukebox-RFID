@@ -143,6 +143,8 @@ class PlayerMPD:
         # are kept as aliases for back-compat — the test suite and a few
         # call sites still reach for them directly.
         self.state_store = MPDStateStore(self.status_file)
+        # DEPRECATED: prefer self.state_store.state_lock; remove after
+        # call-site sweep in a later phase.
         self.state_lock = self.state_store.state_lock
 
         self.second_swipe_action_dict = {'toggle': self.toggle,
@@ -192,6 +194,8 @@ class PlayerMPD:
         # path. ``self.mpd_lock`` is kept as an alias so the dozens of
         # ``with self.mpd_lock:`` call sites need no churn.
         self.mpd_wrapper = MPDClientWrapper(self.mpd_client, self.mpd_host, 6600)
+        # DEPRECATED: prefer self.mpd_wrapper (or self.mpd_client.* for
+        # direct access); remove after call-site sweep in a later phase.
         self.mpd_lock = self.mpd_wrapper
         self.connect()
         logger.info(f"Connected to MPD Version: {self.mpd_client.mpd_version}")
@@ -236,6 +240,8 @@ class PlayerMPD:
                                                                  self.mpd_status_poll_interval, self._mpd_status_poll)
         self.status_thread.start()
 
+    # DEPRECATED: prefer self.state_store.* / self.mpd_client.*; remove
+    # after call-site sweep in a later phase.
     @property
     def music_player_status(self):
         """Back-compat alias for ``state_store.music_player_status``.
@@ -246,6 +252,8 @@ class PlayerMPD:
         """
         return self.state_store.music_player_status
 
+    # DEPRECATED: prefer self.state_store.current_folder_status; remove
+    # after call-site sweep in a later phase.
     @property
     def current_folder_status(self):
         """Back-compat alias for ``state_store.current_folder_status``."""
