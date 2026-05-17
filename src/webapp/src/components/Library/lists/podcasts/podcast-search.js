@@ -109,7 +109,11 @@ const PodcastSearch = ({ isSelecting, onSelectPodcast }) => {
       </form>
 
       {isSearching && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+        <Box
+          sx={{ display: 'flex', justifyContent: 'center', py: 4 }}
+          data-testid="podcast-search-loading"
+          aria-label={t('podcasts.search.loading', 'Searching podcasts')}
+        >
           <CircularProgress />
         </Box>
       )}

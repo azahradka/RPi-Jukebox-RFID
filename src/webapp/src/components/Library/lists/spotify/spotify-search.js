@@ -148,7 +148,11 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
       )}
 
       {isSearching && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+        <Box
+          sx={{ display: 'flex', justifyContent: 'center', py: 4 }}
+          data-testid="spotify-search-loading"
+          aria-label={t('spotify.search.loading', 'Searching Spotify')}
+        >
           <CircularProgress />
         </Box>
       )}
