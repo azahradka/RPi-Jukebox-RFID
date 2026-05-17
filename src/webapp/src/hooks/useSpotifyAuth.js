@@ -161,6 +161,16 @@ const useSpotifyAuth = ({
         // Caller is responsible for opening the URL in a new tab so the
         // hook stays free of ``window``-side effects beyond what the UI
         // already controls.
+        //
+        // The intermediate ``idle`` transition is required for the
+        // useEffect cleanup to fire when ``beginConnect`` is invoked a
+        // second time while already in ``awaiting-paste``. Without it,
+        // React's setState bail-out (prev === new) skips the re-render
+        // and the original 5-minute timer would fire at the original
+        // anchor instead of resetting from the re-trigger.
+        // Reversion check: drop the ``setConnectState('idle')`` line and
+        // ``re-triggering beginConnect resets the timer`` fails.
+        setConnectState('idle');
         setConnectState('awaiting-paste');
         return result.auth_url;
       }

@@ -325,6 +325,53 @@ describe('useSpotifyAuth — awaiting-paste timeout', () => {
     expect(ref.current.error).toBe('');
   });
 
+  it('re-triggering beginConnect resets the timer', async () => {
+    // The hook's awaiting-paste timeout lives in a useEffect keyed on
+    // ``connectState``. Calling beginConnect() a second time while still
+    // in ``awaiting-paste`` must clear the prior 5-minute timer and start
+    // a fresh one — otherwise the original timer fires at the original
+    // 5-minute mark even though the user intended to "restart" the flow.
+    //
+    // Reversion check: if the cleanup were broken (e.g. the effect were
+    // keyed on a stable value, or beginConnect short-circuited the state
+    // transition while in awaiting-paste), the original timer would
+    // survive the re-trigger and fire at the 5-minute mark. The "still
+    // awaiting-paste at 8 min total" assertion below would fail because
+    // the hook would already have flipped to ``idle + paste-timeout``.
+    __setMockResponse('player_spotify.ctrl.get_auth_status', { configured: true });
+    __setMockResponse('player_spotify.ctrl.get_auth_url', {
+      auth_url: 'https://accounts.spotify.com/authorize?x=1',
+    });
+    const { ref } = mount();
+    await waitFor(() => expect(ref.current.authStatus).toBe('unauthenticated'));
+    await driveToAwaitingPaste(ref);
+
+    // Burn 4 minutes — under the 5-minute threshold, so the first timer
+    // is still armed and would fire at the 5-minute mark.
+    act(() => { jest.advanceTimersByTime(4 * 60 * 1000); });
+    expect(ref.current.connectState).toBe('awaiting-paste');
+
+    // Re-trigger the connect flow. The hook should cancel the original
+    // timer (via the useEffect cleanup) and arm a fresh 5-minute timer
+    // anchored at this re-trigger.
+    await act(async () => { await ref.current.beginConnect(); });
+    expect(ref.current.connectState).toBe('awaiting-paste');
+
+    // Advance another 4 minutes (8 minutes total since the FIRST entry,
+    // but only 4 since the re-trigger). If the original timer had not
+    // been cleared, it would have fired at the 5-minute mark (i.e. 1
+    // minute ago) and the state would now be ``idle + paste-timeout``.
+    act(() => { jest.advanceTimersByTime(4 * 60 * 1000); });
+    expect(ref.current.connectState).toBe('awaiting-paste');
+    expect(ref.current.error).toBe('');
+
+    // Push the re-trigger timer past its own 5-minute window
+    // (6 minutes since the re-trigger). Now the fresh timer fires.
+    act(() => { jest.advanceTimersByTime(2 * 60 * 1000); });
+    expect(ref.current.connectState).toBe('idle');
+    expect(ref.current.error).toBe('paste-timeout');
+  });
+
   it('successful submitPastedCode cancels the pending timer', async () => {
     __setMockResponse('player_spotify.ctrl.get_auth_status', { configured: true });
     __setMockResponse('player_spotify.ctrl.get_auth_url', {
