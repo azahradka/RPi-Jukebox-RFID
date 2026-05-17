@@ -33,7 +33,7 @@ Reference the meta-plan; do not re-derive scope. End-of-phase: open PR, update `
 | 1 | Critical correctness fixes (7 commits) | done 2026-05-17 | [#3](https://github.com/azahradka/RPi-Jukebox-RFID/pull/3) |
 | 2 | Player coordination rewrite | done 2026-05-17 | [#4](https://github.com/azahradka/RPi-Jukebox-RFID/pull/4) |
 | 3a | playermpd cleanup + tests | done 2026-05-17 | [#5](https://github.com/azahradka/RPi-Jukebox-RFID/pull/5) |
-| 3b | playerpodcast cleanup + tests | in progress | PR open |
+| 3b | playerpodcast cleanup + tests | done 2026-05-17 | [#7](https://github.com/azahradka/RPi-Jukebox-RFID/pull/7) |
 | 3c | playerspotify cleanup + tests | done 2026-05-17 | [#6](https://github.com/azahradka/RPi-Jukebox-RFID/pull/6) |
 | 4 | Web UI quick wins | done 2026-05-17 | [#8](https://github.com/azahradka/RPi-Jukebox-RFID/pull/8) |
 | 5a | Unified RPC contract (single source of truth) | not started | |
