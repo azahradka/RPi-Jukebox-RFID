@@ -554,16 +554,27 @@ class PlayerPodcast:
             # Second tap detection: if the same podcast is actually playing,
             # delegate to the configured second_swipe_action (default: toggle).
             # Must verify MPD state to avoid stale playback_active flag.
+            #
+            # Snapshot state under the lock, then release before any
+            # cross-plugin RPC (``plugs.call``) or second-swipe handler.
+            # Holding ``self.lock`` across ``plugs.call`` blocks every
+            # status RPC into this plugin for the duration of the call,
+            # which can deadlock the UI if the cross-plugin call recurses
+            # back into the podcast player.
             with self.lock:
-                if self.playback_active and self.current_feed_url == feed_url:
-                    mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
-                    mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
-                    if mpd_state != 'stop':
-                        logger.info("Second tap detected, calling second_swipe_action")
-                        self.second_swipe_action()
-                        return
-                    else:
-                        logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                is_same_podcast = (
+                    self.playback_active and self.current_feed_url == feed_url
+                )
+            if is_same_podcast:
+                mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+                mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
+                if mpd_state != 'stop':
+                    logger.info("Second tap detected, calling second_swipe_action")
+                    self.second_swipe_action()
+                    return
+                else:
+                    logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                    with self.lock:
                         self.playback_active = False
 
             # Fetch feed
@@ -708,17 +719,26 @@ class PlayerPodcast:
             # Second tap detection: if the same episode is actually playing,
             # delegate to the configured second_swipe_action (default: toggle).
             # Must verify MPD state to avoid stale playback_active flag.
+            #
+            # Snapshot the second-swipe condition under the lock, then
+            # release before calling out to ``plugs.call`` or the second-
+            # swipe handler. See ``play_podcast_series`` for the rationale.
             with self.lock:
-                if (self.playback_active and self.current_feed_url == feed_url
-                        and self.current_episode_guid == episode_guid):
-                    mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
-                    mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
-                    if mpd_state != 'stop':
-                        logger.info("Second tap detected, calling second_swipe_action")
-                        self.second_swipe_action()
-                        return
-                    else:
-                        logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                is_same_episode = (
+                    self.playback_active
+                    and self.current_feed_url == feed_url
+                    and self.current_episode_guid == episode_guid
+                )
+            if is_same_episode:
+                mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+                mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
+                if mpd_state != 'stop':
+                    logger.info("Second tap detected, calling second_swipe_action")
+                    self.second_swipe_action()
+                    return
+                else:
+                    logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                    with self.lock:
                         self.playback_active = False
 
             # Fetch feed
