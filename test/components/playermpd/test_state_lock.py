@@ -150,17 +150,23 @@ def test_player_mpd_module_defines_state_lock():
     """Smoke-check that ``PlayerMPD`` wires ``state_lock`` in ``__init__``
     and that ``_mpd_status_poll`` actually holds it.
 
-    Instantiating the class needs a live MPD socket + cfg, which is too
-    heavy for a unit test, so we do a source-level inspection instead.
+    Phase 3a: the lock now lives in :class:`MPDStateStore`; PlayerMPD
+    aliases it as ``self.state_lock = self.state_store.state_lock`` so
+    the poll thread's ``with self.state_lock:`` discipline is unchanged.
     """
     from pathlib import Path
-    source_path = (
-        Path(__file__).resolve().parents[3]
-        / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
-    )
-    src_text = source_path.read_text()
-    assert 'self.state_lock = threading.Lock()' in src_text
-    assert 'with self.state_lock:' in src_text
+    repo_root = Path(__file__).resolve().parents[3]
+    init_text = (
+        repo_root / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
+    ).read_text()
+    store_text = (
+        repo_root / 'src' / 'jukebox' / 'components' / 'playermpd' / 'state_store.py'
+    ).read_text()
+    # PlayerMPD takes the store's lock as its alias; the actual
+    # ``threading.Lock()`` construction lives in MPDStateStore.
+    assert 'self.state_lock = self.state_store.state_lock' in init_text
+    assert 'self.state_lock = threading.Lock()' in store_text
+    assert 'with self.state_lock:' in init_text
 
 
 def test_player_mpd_get_player_type_and_version_uses_attribute():

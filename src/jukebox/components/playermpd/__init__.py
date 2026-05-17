@@ -82,19 +82,16 @@ sudo -u mpd speaker-test -t wav -c 2
 # werden. Bei Wifi also braucht man 3 Funktionen: on / off / toggle. Toggle ist dann first swipe / second swipe
 
 import os
-import copy
 import mpd
 import threading
 import logging
 import time
 import functools
-import json
 from pathlib import Path
 import components.player
 from components.player.coordinator import get_coordinator
 import jukebox.cfghandler
 import jukebox.utils as utils
-from jukebox.utils.atomic_io import atomic_write_json_safe
 import jukebox.plugs as plugs
 import jukebox.multitimer as multitimer
 import jukebox.publishing as publishing
@@ -103,6 +100,7 @@ import misc
 
 from .playcontentcallback import PlayContentCallbacks, PlayCardState
 from .coverart_cache_manager import CoverartCacheManager
+from .state_store import MPDStateStore
 
 logger = logging.getLogger('jb.PlayerMPD')
 cfg = jukebox.cfghandler.get_handler('jukebox')
@@ -148,7 +146,14 @@ class PlayerMPD:
     def __init__(self):
         self.mpd_host = cfg.getn('playermpd', 'host')
         self.status_file = cfg.getn('playermpd', 'status_file')
-        self.music_player_status = self._load_state()
+
+        # State persistence: dict, JSON load/save, and the state_lock all
+        # live in MPDStateStore (Phase 3a). The ``music_player_status``,
+        # ``current_folder_status``, and ``state_lock`` attributes below
+        # are kept as aliases for back-compat — the test suite and a few
+        # call sites still reach for them directly.
+        self.state_store = MPDStateStore(self.status_file)
+        self.state_lock = self.state_store.state_lock
 
         self.second_swipe_action_dict = {'toggle': self.toggle,
                                          'play': self.play,
@@ -196,41 +201,40 @@ class PlayerMPD:
         self.connect()
         logger.info(f"Connected to MPD Version: {self.mpd_client.mpd_version}")
 
-        self.current_folder_status = {}
-        if not self.music_player_status:
-            self.music_player_status['player_status'] = {}
-            self.music_player_status['audio_folder_status'] = {}
-            self._save_state()
-            self.current_folder_status = {}
-            self.music_player_status['player_status']['last_played_folder'] = ''
-        else:
-            last_played_folder = self.music_player_status['player_status'].get('last_played_folder')
-            if last_played_folder:
-                # current_folder_status is a dict, but last_played_folder a str
-                self.current_folder_status = self.music_player_status['audio_folder_status'][last_played_folder]
-                # Restore the playlist status in mpd
-                # But what about playback position?
-                self.mpd_client.clear()
-                #  This could fail and cause load fail of entire package:
-                # self.mpd_client.add(last_played_folder)
-                logger.info(f"Last Played Folder: {last_played_folder}")
+        last_played_folder = self.state_store.last_played_folder()
+        if last_played_folder:
+            existing = self.state_store.get_folder_status(last_played_folder)
+            if existing is not None:
+                self.state_store.current_folder_status = existing
+            # Restore the playlist status in mpd
+            # But what about playback position?
+            self.mpd_client.clear()
+            #  This could fail and cause load fail of entire package:
+            # self.mpd_client.add(last_played_folder)
+            logger.info(f"Last Played Folder: {last_played_folder}")
 
-        # Clear last folder played, as we actually did not play any folder yet
-        # Needed for second swipe detection
-        # TODO: This will loose the last_played_folder information is the box is started and closed with playing anything...
-        # Change this to last_played_folder and shutdown_state (for restoring)
-        self.music_player_status['player_status']['last_played_folder'] = ''
+        # Phase 3a fix: clear only the *swipe* marker on startup, not the
+        # last-played folder itself. The prior code wiped last_played_folder
+        # here, which had two consequences:
+        #   (1) the first swipe after reboot of the same card always looked
+        #       like a first swipe (correct, by accident);
+        #   (2) ``replay`` / ``replay_if_stopped`` lost their resume target
+        #       across reboots (incorrect, the user-visible bug).
+        # With ``last_swiped_folder`` as the second-swipe marker we can
+        # clear it independently and keep last_played_folder for resume.
+        self.state_store.clear_last_swiped_folder()
 
         self.old_song = None
         self.mpd_status = {}
         self.mpd_status_poll_interval = 0.25
         self.mpd_lock = MpdLock(self.mpd_client, self.mpd_host, 6600)
-        # Guards mutations of ``music_player_status``, ``current_folder_status``,
-        # and ``mpd_status`` between the poll thread and RPC threads. Distinct
-        # from ``mpd_lock`` (which serialises the MPD wire) so we can take both
-        # without ordering hazards: poll thread takes mpd_lock for the wire
-        # call, releases it, then takes state_lock for the dict updates.
-        self.state_lock = threading.Lock()
+        # ``state_lock`` (from MPDStateStore) guards mutations of
+        # ``music_player_status``, ``current_folder_status``, and
+        # ``mpd_status`` between the poll thread and RPC threads. Distinct
+        # from ``mpd_lock`` (which serialises the MPD wire) so we can take
+        # both without ordering hazards: poll thread takes mpd_lock for
+        # the wire call, releases it, then takes state_lock for the dict
+        # updates.
         self.status_is_closing = False
         # self.status_thread = threading.Timer(self.mpd_status_poll_interval, self._mpd_status_poll).start()
 
@@ -238,26 +242,28 @@ class PlayerMPD:
                                                                  self.mpd_status_poll_interval, self._mpd_status_poll)
         self.status_thread.start()
 
-    def _load_state(self):
-        """Load player status from JSON file"""
-        if os.path.exists(self.status_file):
-            try:
-                with open(self.status_file, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load player status: {e}")
-                return {}
-        return {}
+    @property
+    def music_player_status(self):
+        """Back-compat alias for ``state_store.music_player_status``.
+
+        Tests and a few legacy call sites read this attribute directly;
+        retaining the property avoids a wide call-site sweep in this phase.
+        New code should go through ``self.state_store`` instead.
+        """
+        return self.state_store.music_player_status
+
+    @property
+    def current_folder_status(self):
+        """Back-compat alias for ``state_store.current_folder_status``."""
+        return self.state_store.current_folder_status
+
+    @current_folder_status.setter
+    def current_folder_status(self, value):
+        self.state_store.current_folder_status = value
 
     def _save_state(self):
-        """Save player status to JSON file atomically (write-tmp + fsync + rename).
-
-        Snapshots under ``state_lock`` so the serialised payload is internally
-        consistent even if the poll thread is mid-update.
-        """
-        with self.state_lock:
-            snapshot = copy.deepcopy(self.music_player_status)
-        atomic_write_json_safe(self.status_file, snapshot)
+        """Persist state via :class:`MPDStateStore` (atomic snapshot)."""
+        return self.state_store.save()
 
     def exit(self):
         logger.debug("Exit routine of playermpd started")
