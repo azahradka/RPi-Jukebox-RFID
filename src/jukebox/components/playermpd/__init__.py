@@ -82,6 +82,7 @@ sudo -u mpd speaker-test -t wav -c 2
 # werden. Bei Wifi also braucht man 3 Funktionen: on / off / toggle. Toggle ist dann first swipe / second swipe
 
 import os
+import copy
 import mpd
 import threading
 import logging
@@ -223,6 +224,12 @@ class PlayerMPD:
         self.mpd_status = {}
         self.mpd_status_poll_interval = 0.25
         self.mpd_lock = MpdLock(self.mpd_client, self.mpd_host, 6600)
+        # Guards mutations of ``music_player_status``, ``current_folder_status``,
+        # and ``mpd_status`` between the poll thread and RPC threads. Distinct
+        # from ``mpd_lock`` (which serialises the MPD wire) so we can take both
+        # without ordering hazards: poll thread takes mpd_lock for the wire
+        # call, releases it, then takes state_lock for the dict updates.
+        self.state_lock = threading.Lock()
         self.status_is_closing = False
         # self.status_thread = threading.Timer(self.mpd_status_poll_interval, self._mpd_status_poll).start()
 
@@ -242,8 +249,14 @@ class PlayerMPD:
         return {}
 
     def _save_state(self):
-        """Save player status to JSON file atomically (write-tmp + fsync + rename)."""
-        atomic_write_json_safe(self.status_file, self.music_player_status)
+        """Save player status to JSON file atomically (write-tmp + fsync + rename).
+
+        Snapshots under ``state_lock`` so the serialised payload is internally
+        consistent even if the poll thread is mid-update.
+        """
+        with self.state_lock:
+            snapshot = copy.deepcopy(self.music_player_status)
+        atomic_write_json_safe(self.status_file, snapshot)
 
     def exit(self):
         logger.debug("Exit routine of playermpd started")
@@ -301,52 +314,66 @@ class PlayerMPD:
         """
         this method polls the status from mpd and stores the important inforamtion in the music_player_status,
         it will repeat itself in the intervall specified by self.mpd_status_poll_interval
+
+        ``state_lock`` guards the dict mutations against concurrent RPC reads
+        (``_save_state``, status RPCs) so neither side observes a torn dict.
+        The MPD wire call sits *outside* the state_lock — we read from MPD
+        first, then merge under state_lock.
         """
-        self.mpd_status.update(self.mpd_retry_with_mutex(self.mpd_client.status))
-        self.mpd_status.update(self.mpd_retry_with_mutex(self.mpd_client.currentsong))
+        new_status = self.mpd_retry_with_mutex(self.mpd_client.status) or {}
+        new_song = self.mpd_retry_with_mutex(self.mpd_client.currentsong) or {}
 
-        if self.mpd_status.get('elapsed') is not None:
-            self.current_folder_status["ELAPSED"] = self.mpd_status['elapsed']
-            self.music_player_status['player_status']["CURRENTSONGPOS"] = self.mpd_status['song']
-            self.music_player_status['player_status']["CURRENTFILENAME"] = self.mpd_status['file']
-
-        if self.mpd_status.get('file') is not None:
-            self.current_folder_status["CURRENTFILENAME"] = self.mpd_status['file']
-            self.current_folder_status["CURRENTSONGPOS"] = self.mpd_status['song']
-            self.current_folder_status["ELAPSED"] = self.mpd_status.get('elapsed', '0.0')
-            self.current_folder_status["PLAYSTATUS"] = self.mpd_status['state']
-            self.current_folder_status["RESUME"] = "OFF"
-            self.current_folder_status["SHUFFLE"] = "OFF"
-            self.current_folder_status["LOOP"] = "OFF"
-            self.current_folder_status["SINGLE"] = "OFF"
-
-        # Delete the volume key to avoid confusion
-        # Volume is published via the 'volume' component!
-        try:
-            del self.mpd_status['volume']
-        except KeyError:
-            pass
-
-        # Check if playing a podcast (URL) and enrich with podcast metadata
-        current_file = self.mpd_status.get('file', '')
-        if current_file and (current_file.startswith('http://') or current_file.startswith('https://')):
-            # Try to get podcast metadata if podcast player is active
+        # ``plugs.call`` to player_podcast may be slow; do it outside the lock.
+        # The dict update is harmless and is re-protected below.
+        podcast_overlay = None
+        candidate_file = new_song.get('file', '')
+        if candidate_file and (candidate_file.startswith('http://') or candidate_file.startswith('https://')):
             try:
                 podcast_status = plugs.call('player_podcast', 'ctrl', 'playerstatus')
                 if podcast_status and podcast_status.get('title'):
-                    # Enrich MPD status with podcast metadata
-                    self.mpd_status.update({
+                    podcast_overlay = {
                         'title': podcast_status.get('title'),
                         'artist': podcast_status.get('artist'),
                         'album': podcast_status.get('album'),
                         'songid': podcast_status.get('songid'),
-                        'coverart_url': podcast_status.get('coverart_url')
-                    })
+                        'coverart_url': podcast_status.get('coverart_url'),
+                    }
             except Exception:
                 pass  # Podcast player not active or not available
 
+        with self.state_lock:
+            self.mpd_status.update(new_status)
+            self.mpd_status.update(new_song)
+
+            if self.mpd_status.get('elapsed') is not None:
+                self.current_folder_status["ELAPSED"] = self.mpd_status['elapsed']
+                self.music_player_status['player_status']["CURRENTSONGPOS"] = self.mpd_status['song']
+                self.music_player_status['player_status']["CURRENTFILENAME"] = self.mpd_status['file']
+
+            if self.mpd_status.get('file') is not None:
+                self.current_folder_status["CURRENTFILENAME"] = self.mpd_status['file']
+                self.current_folder_status["CURRENTSONGPOS"] = self.mpd_status['song']
+                self.current_folder_status["ELAPSED"] = self.mpd_status.get('elapsed', '0.0')
+                self.current_folder_status["PLAYSTATUS"] = self.mpd_status['state']
+                self.current_folder_status["RESUME"] = "OFF"
+                self.current_folder_status["SHUFFLE"] = "OFF"
+                self.current_folder_status["LOOP"] = "OFF"
+                self.current_folder_status["SINGLE"] = "OFF"
+
+            # Delete the volume key to avoid confusion
+            # Volume is published via the 'volume' component!
+            try:
+                del self.mpd_status['volume']
+            except KeyError:
+                pass
+
+            if podcast_overlay:
+                self.mpd_status.update(podcast_overlay)
+
+            published_snapshot = dict(self.mpd_status)
+
         if components.player.get_active_player() == 'mpd':
-            publishing.get_publisher().send('playerstatus', self.mpd_status)
+            publishing.get_publisher().send('playerstatus', published_snapshot)
 
     # MPD can play absolute paths but can find songs in its database only by relative path
     # This function aims to prepare the song_url accordingly
@@ -358,8 +385,13 @@ class PlayerMPD:
 
     @plugs.tag
     def get_player_type_and_version(self):
+        # python-mpd2 exposes ``mpd_version`` as a *property* (string-valued),
+        # not a callable. The previous parenthesised form raised TypeError on
+        # real MPD clients and was only masked in tests by the
+        # ``_MPDVersionString`` shim in ``test/conftest.py`` (removed in this
+        # commit — Phase 0b loose end).
         with self.mpd_lock:
-            value = self.mpd_client.mpd_version()
+            value = self.mpd_client.mpd_version
         return value
 
     @plugs.tag
