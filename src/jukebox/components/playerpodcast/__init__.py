@@ -85,6 +85,11 @@ plugs_config_schema = {
             'timeout': int,
         },
     },
+    # Item 3: previously baselined-drift keys. Both are consulted by
+    # PlayerPodcast.__init__ via cfg.getn(...) and have valid YAML
+    # defaults — they were just missing from the schema declaration.
+    'episode_cache': dict,
+    'second_swipe_action': dict,
 }
 
 

@@ -144,6 +144,10 @@ plugs_config_schema = {
     'status_file': str,
     'music_library_path': str,
     'second_swipe_action': dict,
+    # ``library.update_on_startup`` / ``library.check_user_rights`` are
+    # the two flags consulted in :func:`initialize`. The schema names
+    # the top-level subdict; the nested keys ride along.
+    'library': dict,
 }
 
 
