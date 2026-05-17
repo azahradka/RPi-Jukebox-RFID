@@ -500,7 +500,7 @@ class PlayerMPD:
         Will reset settings to folder config"""
         logger.debug("Replay")
         with self.mpd_lock:
-            self.play_folder(self.music_player_status['player_status']['last_played_folder'])
+            self.play_folder(self.state_store.last_played_folder())
 
     @plugs.tag
     def toggle(self):
@@ -518,7 +518,7 @@ class PlayerMPD:
         > but we keep it as it is specifically implemented in box 2.X"""
         with self.mpd_lock:
             if self.mpd_status['state'] == 'stop':
-                self.play_folder(self.music_player_status['player_status']['last_played_folder'])
+                self.play_folder(self.state_store.last_played_folder())
 
     # Shuffle
     def _shuffle(self, random):
@@ -632,20 +632,35 @@ class PlayerMPD:
         :param folder: Folder path relative to music library path
         :param recursive: Add folder recursively
         """
-        # Developers notes:
+        # Developer notes (preserved from the prior implementation):
         #
-        #     * 2nd swipe trigger may also happen, if playlist has already stopped playing
-        #       --> Generally, treat as first swipe
-        #     * 2nd swipe of same Card ID may also happen if a different song has been played in between from WebUI
-        #       --> Treat as first swipe
-        #     * With place-not-swipe: Card is placed on reader until playlist expieres. Music stop. Card is removed and
-        #       placed again on the reader: Should be like first swipe
-        #     * TODO: last_played_folder is restored after box start, so first swipe of last played card may look like
-        #       second swipe
+        #   * A 2nd-swipe trigger may also happen if the playlist has
+        #     already stopped playing → generally treat as first swipe
+        #     (current code does *not* distinguish; left as a known
+        #     limitation, not regressed by this commit).
+        #   * 2nd swipe of the same Card ID after a different song was
+        #     played via the WebUI → treat as first swipe; handled
+        #     correctly because ``last_swiped_folder`` is rewritten by
+        #     whatever swipe triggered the WebUI flow.
+        #   * place-not-swipe: card stays on reader until playlist
+        #     expires; on re-placement we want first-swipe behaviour
+        #     → also handled correctly because the card removal action
+        #     does not clear ``last_swiped_folder`` (see rfid.yaml).
         #
-        logger.debug(f"last_played_folder = {self.music_player_status['player_status']['last_played_folder']}")
-        with self.mpd_lock:
-            is_second_swipe = self.music_player_status['player_status']['last_played_folder'] == folder
+        # Phase 3a fix: second-swipe detection now compares against
+        # ``last_swiped_folder``, not ``last_played_folder``. The store
+        # clears ``last_swiped_folder`` at startup so the first swipe
+        # after reboot of the last-played card plays it (instead of
+        # being misread as a 2nd swipe). ``last_played_folder`` is
+        # preserved across reboots for the resume / replay use case.
+        last_swiped = self.state_store.last_swiped_folder()
+        logger.debug(f"last_swiped_folder = {last_swiped!r}, folder = {folder!r}")
+        is_second_swipe = bool(last_swiped) and last_swiped == folder
+
+        # Record this swipe regardless of outcome. The marker survives
+        # within a session; the store clears it on next startup.
+        self.state_store.set_last_swiped_folder(folder)
+
         if self.second_swipe_action is not None and is_second_swipe:
             logger.debug('Calling second swipe action')
 
@@ -708,18 +723,29 @@ class PlayerMPD:
         plc.get_directory_content(folder)
         return plc.playlist
 
-    @plugs.tag
-    def play_folder(self, folder: str, recursive: bool = False) -> None:
-        """
-        Playback a music folder.
+    def _record_play_folder_state(self, folder: str) -> None:
+        """State-update path for play_folder (Phase 3a split).
 
-        Folder content is added to the playlist as described by :mod:`jukebox.playlistgenerator`.
-        The playlist is cleared first.
+        Updates ``last_played_folder`` (the resume target) and points
+        ``current_folder_status`` at the entry for ``folder`` (creating
+        it if missing), then persists to disk. No MPD wire activity.
 
-        :param folder: Folder path relative to music library path
-        :param recursive: Add folder recursively
+        Separated from the playback trigger so tests can assert state
+        bookkeeping in isolation, and so future call sites that want
+        to record a folder *without* triggering playback have a hook.
         """
-        # TODO: This changes the current state -> Need to save last state
+        self.state_store.set_last_played_folder(folder)
+        self.state_store.set_current_folder_status(folder)
+        self._save_state()
+
+    def _trigger_play_folder(self, folder: str, recursive: bool) -> None:
+        """Playback-trigger path for play_folder (Phase 3a split).
+
+        Activates MPD via the coordinator, clears the queue, enumerates
+        the folder via :class:`playlistgenerator.PlaylistCollector`,
+        adds tracks one-by-one, then calls play(). Does NOT touch
+        persisted state — see :meth:`_record_play_folder_state`.
+        """
         self._activate_mpd()
         with self.mpd_lock:
             logger.info(f"Play folder: '{folder}'")
@@ -736,14 +762,27 @@ class PlayerMPD:
             except Exception as e:
                 logger.error(f"{e.__class__.__qualname__}: {e} at uri {uri}")
 
-            self.music_player_status['player_status']['last_played_folder'] = folder
-
-            self.current_folder_status = self.music_player_status['audio_folder_status'].get(folder)
-            if self.current_folder_status is None:
-                self.current_folder_status = self.music_player_status['audio_folder_status'][folder] = {}
-
             self.mpd_client.play()
-            self._save_state()
+
+    @plugs.tag
+    def play_folder(self, folder: str, recursive: bool = False) -> None:
+        """
+        Playback a music folder.
+
+        Folder content is added to the playlist as described by :mod:`jukebox.playlistgenerator`.
+        The playlist is cleared first.
+
+        Internally split (Phase 3a) into a state-update step and a
+        playback-trigger step. The state step runs *first* so a wedged
+        MPD wire still leaves last_played_folder consistent with the
+        user's intent (matches the prior behaviour where the writes
+        sat inside the same with-block).
+
+        :param folder: Folder path relative to music library path
+        :param recursive: Add folder recursively
+        """
+        self._record_play_folder_state(folder)
+        self._trigger_play_folder(folder, recursive)
 
     @plugs.tag
     def play_album(self, albumartist: str, album: str):
