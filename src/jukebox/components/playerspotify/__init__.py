@@ -43,6 +43,11 @@ from jukebox.utils.atomic_io import atomic_write_json_safe
 from components.player.coordinator import get_coordinator
 from .spotify_auth import SpotifyAuthManager
 from .content_resolver import SpotifyContentResolver
+from .swipe_decision import (
+    SpotifySwipeContext,
+    SpotifySwipeDecision,
+    decide_spotify_swipe,
+)
 
 logger = logging.getLogger('jb.PlayerSpotify')
 cfg = jukebox.cfghandler.get_handler('jukebox')
@@ -113,6 +118,12 @@ class PlayerSpotify:
             self.player_status = {
                 'state': 'stopped',  # stopped, playing, paused
                 'last_played_uri': None,
+                # Phase 3c: track card-driven activations separately from
+                # in-app starts so play_card can distinguish a fresh swipe
+                # of a URI that was started via the web UI from a real
+                # second swipe. ``last_card_uri`` is None on cold start
+                # and only ever set by play_card.
+                'last_card_uri': None,
                 'current_track': None,
                 'current_queue': [],
                 'position_ms': 0,
@@ -120,6 +131,9 @@ class PlayerSpotify:
                 'shuffle': False,
                 'repeat': 'off'  # off, track, context
             }
+        # Ensure the field exists for state files saved before Phase 3c
+        # (older installs persisted player_status without last_card_uri).
+        self.player_status.setdefault('last_card_uri', None)
 
         # Second swipe action configuration
         second_swipe_option = cfg.getn('playerspotify', 'second_swipe_action', 'alias',
@@ -1023,16 +1037,33 @@ class PlayerSpotify:
         """
         Play content triggered by RFID card with second swipe detection
 
+        Uses :func:`decide_spotify_swipe` (Phase 3c) so the rule is
+        observable in isolation. A swipe is treated as a SECOND_TOGGLE
+        only when (a) the URI matches the last played, (b) Spotify is
+        the active backend, and (c) the *previous* activation of this
+        URI also came from a card swipe. That third condition prevents
+        the common bug where the user started a URI from the web UI
+        and the first physical card swipe was misread as a second
+        swipe (and paused playback).
+
         Args:
             uri: Spotify URI
         """
         try:
-            last_uri = self.player_status.get('last_played_uri')
+            ctx = SpotifySwipeContext(
+                incoming_uri=uri,
+                last_played_uri=self.player_status.get('last_played_uri'),
+                last_card_uri=self.player_status.get('last_card_uri'),
+                coordinator_current=get_coordinator().current(),
+            )
+            decision = decide_spotify_swipe(ctx)
 
-            # Second swipe detection - only if Spotify is the active player.
-            # When switching FROM another player (podcast, MPD), always do
-            # a fresh play_content so the track actually starts.
-            if last_uri == uri and get_coordinator().current() == 'spotify':
+            # Either branch counts as the new most-recent card swipe.
+            # Stamp it BEFORE dispatch so a re-entrant call (toggle ->
+            # pause -> play) observes the up-to-date card pointer.
+            self.player_status['last_card_uri'] = uri
+
+            if decision is SpotifySwipeDecision.SECOND_TOGGLE:
                 logger.info(f"Second swipe detected for: {uri}")
                 self.second_swipe_action()
             else:
