@@ -47,6 +47,30 @@ Saving {'player_status': {'last_played_folder': 'TraumfaengerStarkeLieder', 'CUR
 {'TraumfaengerStarkeLieder': {'ELAPSED': '1.0', 'CURRENTFILENAME': 'TraumfaengerStarkeLieder/01.mp3', 'CURRENTSONGPOS': '0', 'PLAYSTATUS': 'stop', 'RESUME': 'OFF', 'SHUFFLE': 'OFF', 'LOOP': 'OFF', 'SINGLE': 'OFF'},
 'Giraffenaffen': {'ELAPSED': '1.0', 'CURRENTFILENAME': 'TraumfaengerStarkeLieder/01.mp3', 'CURRENTSONGPOS': '0', 'PLAYSTATUS': 'play', 'RESUME': 'OFF', 'SHUFFLE': 'OFF', 'LOOP': 'OFF', 'SINGLE': 'OFF'}}}
 
+Activation vs. passive control (Phase 3a)
+-----------------------------------------
+
+The :class:`PlayerCoordinator` decides which backend is *active* (i.e.
+audible). Phase 3a pinned a uniform rule for which RPCs trigger an
+activation handoff via ``coordinator.activate()`` and which do not:
+
+  **Activation events** -- start/restart/resume playback:
+      ``play``, ``play_single``, ``resume``, ``play_folder``,
+      ``play_album``, ``play_card`` (transitively via ``play_folder``),
+      and ``replay`` / ``replay_if_stopped`` (transitively).
+      Each calls ``self._activate_mpd()``.
+
+  **Passive controls** -- modify the current session, never re-claim:
+      ``stop``, ``pause``, ``toggle``, ``next``, ``prev``,
+      ``shuffle``, ``repeat``, ``seek``, ``rewind``, ``set_volume``,
+      ``get_volume``. These bypass the coordinator entirely.
+
+Rationale: re-claiming on a passive op would *steal* playback from
+whoever the user just handed off to. The only safe re-claim trigger
+is a user-initiated playback start (RPC or RFID swipe). The same
+rule applies to podcast and Spotify backends; see
+:mod:`components.player.coordinator` for the cross-backend statement.
+
 References:
 https://github.com/Mic92/python-mpd2
 https://python-mpd2.readthedocs.io/en/latest/topics/commands.html

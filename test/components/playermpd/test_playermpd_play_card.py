@@ -301,5 +301,59 @@ def test_play_card_uses_last_swiped_folder_not_last_played():
     assert "music_player_status['player_status']['last_played_folder']" not in pc_body
 
 
+def test_activation_rule_is_documented_in_module_docstring():
+    """Phase 3a pins the activation-vs-passive-control rule (Phase 2
+    follow-up #1). Assert the docstring section exists in both
+    coordinator.py and playermpd/__init__.py so a future docstring
+    sweep doesn't drop it."""
+    from pathlib import Path
+    repo_root = Path(__file__).resolve().parents[3]
+    init_text = (
+        repo_root / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
+    ).read_text()
+    coord_text = (
+        repo_root / 'src' / 'jukebox' / 'components' / 'player' / 'coordinator.py'
+    ).read_text()
+    assert 'Activation vs. passive control' in init_text
+    assert 'Activation vs. passive control' in coord_text
+
+
+def test_activation_call_set_matches_documented_rule():
+    """Smoke-check that the RPCs documented as activation events do
+    call ``_activate_mpd()``, and the passive ones do not. This is a
+    grep-level test -- a behavioural test would need a full PlayerMPD
+    instance which we can't construct in unit scope."""
+    from pathlib import Path
+    src_text = (
+        Path(__file__).resolve().parents[3]
+        / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
+    ).read_text()
+
+    def body_of(method_name: str) -> str:
+        start = src_text.index(f'def {method_name}(')
+        # Next blank-line-then-def or end-of-class
+        after = src_text.find('\n    @plugs.tag', start + 1)
+        if after == -1:
+            after = src_text.find('\n    def ', start + 1)
+        return src_text[start:after if after > 0 else len(src_text)]
+
+    # Activation events must call _activate_mpd().
+    for name in ('play', 'play_single', 'resume', 'play_album'):
+        assert 'self._activate_mpd()' in body_of(name), (
+            f"{name} is documented as an activation event but does not "
+            f"call self._activate_mpd()"
+        )
+    # ``_trigger_play_folder`` is the activation-bearing half of
+    # play_folder (the state-update half does not touch the wire).
+    assert 'self._activate_mpd()' in body_of('_trigger_play_folder')
+
+    # Passive controls must NOT call _activate_mpd().
+    for name in ('stop', 'pause', 'toggle', 'shuffle', 'repeat', 'seek', 'rewind'):
+        assert 'self._activate_mpd()' not in body_of(name), (
+            f"{name} is documented as passive but calls self._activate_mpd() "
+            f"-- this would silently steal playback from another backend"
+        )
+
+
 # Keep pytest + mock imports in use (referenced in harness tests).
 _ = (pytest, mock)
