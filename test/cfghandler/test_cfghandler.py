@@ -92,6 +92,57 @@ def test_ordereddict_mutable():
     assert 'anew2' == cfg.getn('l1', 'key2')
 
 
+def test_getn_logs_warning_on_intermediate_type_mismatch(caplog):
+    """Phase 6: when getn descends into a non-mapping intermediate
+    value (e.g. an int where a dict is expected), log a WARN with the
+    consumed/remaining dotted path so config-schema typos are
+    debuggable.
+
+    Reversion check: remove the WARN log in getn's AttributeError
+    branch and this test fails.
+    """
+    import logging as _logging
+    cfg = cfghandler.ConfigHandler('test_getn_warn')
+    cfg.config_dict({'rfid': 1})
+
+    caplog.set_level(_logging.WARNING, logger='jb.cfghandler')
+    result = cfg.getn('rfid', 'readers', default='X')
+
+    # Phase 6: returns default (was returning the leaf int before)
+    assert result == 'X'
+
+    # And we logged a structured warning identifying the path
+    matched = [r for r in caplog.records
+               if 'getn type mismatch' in r.getMessage()
+               and "'rfid'" in r.getMessage()
+               and "'readers'" in r.getMessage()]
+    assert matched, (
+        f"Expected getn type-mismatch warning. Got: "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_getn_no_warning_for_missing_keys():
+    """A simple missing key is not a mismatch — just return default,
+    no warning."""
+    import logging as _logging
+    cfg = cfghandler.ConfigHandler('test_getn_no_warn')
+    cfg.config_dict({'rfid': {'readers': {}}})
+
+    # Use Python's logging system directly to capture only this case
+    logger = _logging.getLogger('jb.cfghandler')
+    msgs = []
+    handler = _logging.Handler()
+    handler.handle = lambda r: msgs.append(r.getMessage())
+    logger.addHandler(handler)
+    try:
+        result = cfg.getn('rfid', 'readers', 'rdr1', default='Y')
+    finally:
+        logger.removeHandler(handler)
+    assert result == 'Y'
+    assert not any('type mismatch' in m for m in msgs)
+
+
 def test_load_yaml_resolves_relative_paths_under_home(tmp_path, monkeypatch):
     """Phase 6: load_yaml anchors relative filenames under PHONIEBOX_HOME.
 

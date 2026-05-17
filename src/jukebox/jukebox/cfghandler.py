@@ -150,6 +150,13 @@ class ConfigHandler:
 
         The *default* value is returned no matter at which hierarchy level the path aborts.
         A hierarchy is considered as any type with a :func:`get` method.
+
+        Phase 6: when an intermediate key is the wrong type — e.g. a
+        leaf int reached before the full dotted path was consumed —
+        log a WARN identifying the offending path. Helps debug
+        config-schema mistakes (e.g. someone wrote ``rfid: 1`` and
+        then a caller does ``cfg.getn('rfid', 'readers')``). The
+        return value is unchanged: ``default`` is still returned.
         """
         with self._lock:
             sub = self._data
@@ -157,6 +164,17 @@ class ConfigHandler:
                 try:
                     sub = sub.get(keys[idx], default)
                 except AttributeError:
+                    # Phase 6: log the path so config-schema mistakes
+                    # are debuggable instead of silently returning default.
+                    consumed = '.'.join(str(k) for k in keys[:idx])
+                    remaining = '.'.join(str(k) for k in keys[idx:])
+                    logger.warning(
+                        f"({self.name}) getn type mismatch at '{consumed}' "
+                        f"({type(sub).__name__}, not a mapping): "
+                        f"cannot descend into '{remaining}'. "
+                        f"Returning default."
+                    )
+                    sub = default
                     break
         return sub
 
