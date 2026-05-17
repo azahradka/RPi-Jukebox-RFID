@@ -18,6 +18,7 @@ on:
         - 'main'
         - future3/develop
         - future3/main
+        - 'phase/**'
     paths:
         - '.github/workflows/test_build_webapp_v3.yml'
         - '.github/actions/build-webapp/**'

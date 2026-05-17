@@ -19,6 +19,7 @@ on:
     branches:
         - 'main'
         - 'future3/**'
+        - 'phase/**'
     paths:
         - '.github/workflows/pythonpackage_future3.yml'
         - '.flake8'
