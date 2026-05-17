@@ -25,15 +25,12 @@ covered plugs.call site causes the corresponding probe to return
 False - test fails.
 """
 
-import sys
 import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 
-# Mock optional native deps that the podcast component imports
-# transitively (feedparser via feed_manager, requests via downloader).
 # Do NOT pre-mock ``requests`` / ``feedparser`` at module level - both
 # are installed in the venv, and a module-level MagicMock for
 # ``requests`` pollutes sys.modules for later-collected test files

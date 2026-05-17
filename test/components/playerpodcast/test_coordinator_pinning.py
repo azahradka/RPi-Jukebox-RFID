@@ -25,7 +25,6 @@ playermpd's ``_activate_mpd`` side-effect for ``play_single`` only -
 proving that the passive variants do NOT trigger the flip.
 """
 
-import sys
 import threading
 from unittest.mock import MagicMock, patch
 

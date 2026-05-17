@@ -10,11 +10,7 @@ ignore =
     # line break before binary operator
     W503,
     # global name / nonlocal name is unused: name is never assigned in scope
-    F824,
-    # missing whitespace around arithmetic operator (newly-enforced in
-    # pycodestyle 2.14+; noisy on pre-existing podcast/downloader code,
-    # not in scope for Phase 0b - revisit during Phase 3b cleanup)
-    E226
+    F824
 per-file-ignores =
     # Only in __init__files ignore imported but unused
     # Not necessary, if __all__ is declared in __init__ file

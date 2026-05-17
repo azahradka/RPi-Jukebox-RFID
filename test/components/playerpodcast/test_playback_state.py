@@ -15,8 +15,6 @@ and confirm the test fails.
 import sys
 from pathlib import Path
 
-import pytest
-
 
 # Make jukebox source importable for the state-manager / queue-manager fixtures.
 _JUKEBOX_SRC = Path(__file__).resolve().parents[3] / 'src' / 'jukebox'

@@ -22,7 +22,6 @@ interposer asserts ``self.lock`` is acquirable *during* the
 cross-plugin call - the lock-release invariant in production code.
 """
 
-import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -30,8 +29,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# Mock external dependencies for component import (conftest already
-# pre-mocks the jukebox framework but not feedparser/requests).
 # Do NOT pre-mock ``requests`` / ``feedparser`` at module level - both
 # are installed in the venv, and a module-level MagicMock for
 # ``requests`` pollutes sys.modules for later-collected test files
