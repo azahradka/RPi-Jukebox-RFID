@@ -39,6 +39,7 @@ from spotipy.exceptions import SpotifyException
 import jukebox.cfghandler
 import jukebox.plugs as plugs
 import jukebox.publishing as publishing
+from jukebox.utils.atomic_io import atomic_write_json_safe
 import components.player as player_module
 from .spotify_auth import SpotifyAuthManager
 from .content_resolver import SpotifyContentResolver
@@ -262,12 +263,8 @@ class PlayerSpotify:
         return {}
 
     def _save_status(self):
-        """Save player status to JSON file"""
-        try:
-            with open(self.status_file, 'w') as f:
-                json.dump(self.player_status, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save player status: {e}")
+        """Save player status to JSON file atomically (write-tmp + fsync + rename)."""
+        atomic_write_json_safe(self.status_file, self.player_status)
 
     def _to_mpd_status(self):
         """Convert Spotify status to MPD-compatible format for the web UI.

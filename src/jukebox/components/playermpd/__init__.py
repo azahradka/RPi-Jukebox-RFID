@@ -92,6 +92,7 @@ from pathlib import Path
 import components.player
 import jukebox.cfghandler
 import jukebox.utils as utils
+from jukebox.utils.atomic_io import atomic_write_json_safe
 import jukebox.plugs as plugs
 import jukebox.multitimer as multitimer
 import jukebox.publishing as publishing
@@ -241,12 +242,8 @@ class PlayerMPD:
         return {}
 
     def _save_state(self):
-        """Save player status to JSON file"""
-        try:
-            with open(self.status_file, 'w') as f:
-                json.dump(self.music_player_status, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save player status: {e}")
+        """Save player status to JSON file atomically (write-tmp + fsync + rename)."""
+        atomic_write_json_safe(self.status_file, self.music_player_status)
 
     def exit(self):
         logger.debug("Exit routine of playermpd started")
