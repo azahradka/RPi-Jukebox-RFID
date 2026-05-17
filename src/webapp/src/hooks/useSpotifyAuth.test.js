@@ -18,8 +18,9 @@
  */
 
 import React, { useImperativeHandle, forwardRef } from 'react';
-import { act, render, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 
+import SpotifyAuthFlow from '../components/Settings/spotify/SpotifyAuthFlow';
 import {
   __resetMockSocket,
   __setMockResponse,
@@ -344,5 +345,42 @@ describe('useSpotifyAuth — awaiting-paste timeout', () => {
     act(() => { jest.advanceTimersByTime(AWAITING_PASTE_TIMEOUT_MS + 1000); });
     expect(ref.current.authStatus).toBe('authenticated');
     expect(ref.current.error).toBe('');
+  });
+});
+
+describe('SpotifyAuthFlow — post-timeout error visibility', () => {
+  // Integration check covering the seam between the hook and the
+  // presentational component: when the 5-minute awaiting-paste timer
+  // auto-recovers, ``connectState`` flips back to ``idle`` but
+  // ``errorKey`` stays set to ``'paste-timeout'``. The UI must surface
+  // that error inside the idle (unauthenticated) branch — otherwise the
+  // user is silently dumped on the "Connect Spotify" button with no
+  // indication that anything went wrong.
+  //
+  // Reversion check: drop the ``{errorKey && <Alert ... />}`` block from
+  // the idle branch of ``SpotifyAuthFlow.js`` and this test fails
+  // because the alert text can no longer be found in the DOM.
+  it('renders timeout error in the idle branch after auto-recovery', () => {
+    render(
+      <SpotifyAuthFlow
+        authStatus="unauthenticated"
+        connectState="idle"
+        errorKey="paste-timeout"
+        onBeginConnect={() => Promise.resolve(null)}
+        onSubmitPaste={() => Promise.resolve(false)}
+        onCancelPaste={() => {}}
+        onDisconnect={() => {}}
+        onEditConfig={() => {}}
+        onErrorCleared={() => {}}
+      />
+    );
+    // The Alert renders via ``t(`settings.spotify.${errorKey}`, errorKey)``.
+    // Without an i18next backend loaded in tests the default value
+    // (the raw key) is returned, so we assert on ``paste-timeout`` text.
+    const alert = screen.getByRole('alert');
+    expect(alert).toBeInTheDocument();
+    expect(alert).toHaveTextContent('paste-timeout');
+    // The Connect button must still be present so the user can retry.
+    expect(screen.getByRole('button', { name: /Connect Spotify/i })).toBeInTheDocument();
   });
 });

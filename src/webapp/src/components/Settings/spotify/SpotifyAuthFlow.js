@@ -113,27 +113,39 @@ const SpotifyAuthFlow = ({
   }
 
   // --- Unauthenticated + idle ---
+  // ``errorKey`` can leak into this branch when the awaiting-paste timer
+  // auto-recovers (``connectState`` flips back to ``idle`` but the error
+  // stays set so the user understands why their popup got cancelled).
+  // Without the Alert below the user is silently dumped back on the
+  // Connect button — defeating the whole "user not stranded" purpose.
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-      <Typography variant="body2" color="text.secondary">
-        {t('settings.spotify.connect-hint')}
-      </Typography>
-      <Box sx={{ display: 'flex', gap: 1 }}>
-        <Button variant="outlined" size="small" onClick={onEditConfig}>
-          {t('settings.spotify.edit-config', 'Edit Credentials')}
-        </Button>
-        <Button
-          variant="contained"
-          onClick={() => {
-            onBeginConnect().then((url) => {
-              if (url) {
-                window.open(url, '_blank', 'noopener');
-              }
-            });
-          }}
-        >
-          {t('settings.spotify.connect', 'Connect Spotify')}
-        </Button>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {errorKey && (
+        <Alert severity="warning" onClose={onErrorCleared}>
+          {t(`settings.spotify.${errorKey}`, errorKey)}
+        </Alert>
+      )}
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Typography variant="body2" color="text.secondary">
+          {t('settings.spotify.connect-hint')}
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button variant="outlined" size="small" onClick={onEditConfig}>
+            {t('settings.spotify.edit-config', 'Edit Credentials')}
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              onBeginConnect().then((url) => {
+                if (url) {
+                  window.open(url, '_blank', 'noopener');
+                }
+              });
+            }}
+          >
+            {t('settings.spotify.connect', 'Connect Spotify')}
+          </Button>
+        </Box>
       </Box>
     </Box>
   );
