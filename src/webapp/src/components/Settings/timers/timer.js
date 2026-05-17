@@ -19,11 +19,7 @@ const useTimer = (type) => {
 
   const fetchTimerStatus = useCallback(async () => {
     try {
-      const { result: timerStatus, error: timerStatusError } = await request(`${pluginName}.get_state`);
-
-      if (timerStatusError) {
-        throw timerStatusError;
-      }
+      const { result: timerStatus } = await request(`${pluginName}.get_state`);
 
       setTimerState(prev => ({
         ...prev,
