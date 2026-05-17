@@ -36,10 +36,10 @@ Reference the meta-plan; do not re-derive scope. End-of-phase: open PR, update `
 | 3b | playerpodcast cleanup + tests | done 2026-05-17 | [#7](https://github.com/azahradka/RPi-Jukebox-RFID/pull/7) |
 | 3c | playerspotify cleanup + tests | done 2026-05-17 | [#6](https://github.com/azahradka/RPi-Jukebox-RFID/pull/6) |
 | 4 | Web UI quick wins | done 2026-05-17 | [#8](https://github.com/azahradka/RPi-Jukebox-RFID/pull/8) |
-| 5a | Unified RPC contract (single source of truth) | in progress | PR open |
+| 5a | Unified RPC contract (single source of truth) | done 2026-05-17 | [#10](https://github.com/azahradka/RPi-Jukebox-RFID/pull/10) |
 | 5b | UI monolith breakups + socket pooling | not started | |
 | 6 | Core framework polish (plugs/daemon/cfg validation) | done 2026-05-17 | [#9](https://github.com/azahradka/RPi-Jukebox-RFID/pull/9) |
-| 7 | Dev workflow (auto-sync, local smoke harness) | not started | |
+| 7 | Dev workflow (auto-sync, local smoke harness) | in progress | PR open, awaiting review |
 
 **Status values:** `not started` → `in progress` → `done YYYY-MM-DD` → `blocked: <reason>`.
 
@@ -261,6 +261,20 @@ cd src/webapp && npm test
 
 # Monitor publishing messages (debugging)
 ./tools/run_publicity_sniffer.sh
+
+# Auto-rsync src/jukebox/ to the RPi on every save (Phase 7)
+# Defaults: boxadmin@phoniebox.local, ~/.ssh/Phoniebox.pub
+./tools/watch_and_sync.sh                 # sync only
+./tools/watch_and_sync.sh --restart       # sync + restart jukebox-daemon
+./tools/watch_and_sync.sh --once          # one-shot sync, no watch
+# Requires fswatch (brew install fswatch / apt install fswatch);
+# falls back to 2s polling if not installed.
+
+# Fast in-process smoke harness (Phase 7) — no daemon, no MPD, no
+# network. Exercises decide_swipe, decide_second_swipe,
+# PlayerCoordinator handoffs, and paths cache-reset. Runs in
+# under 100ms; intended to be run on every Python change.
+./tools/run_local_smoke.sh
 
 # Configure RFID readers
 ./installation/components/setup_rfid_reader.sh
