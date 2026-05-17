@@ -13,6 +13,7 @@ that pre-mock ``jukebox.plugs`` via ``sys.modules`` continue to work and take
 precedence within their subtree.
 """
 
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -32,6 +33,21 @@ if str(_JUKEBOX_SRC) not in sys.path:
 # ---------------------------------------------------------------------------
 
 
+class _MPDVersionString(str):
+    """A version string that is also callable.
+
+    Real ``python-mpd2`` exposes ``MPDClient.mpd_version`` as a plain
+    attribute. ``playermpd/__init__.py`` currently invokes it as
+    ``self.mpd_client.mpd_version()`` (latent bug, slated for a Phase 1
+    correctness fix). This subclass lets the test fake work for both
+    access patterns: ``client.mpd_version`` returns the string,
+    ``client.mpd_version()`` also returns the string.
+    """
+
+    def __call__(self):
+        return str(self)
+
+
 class FakeMPDClient:
     """In-memory stand-in for ``python-mpd2``'s ``MPDClient``.
 
@@ -47,7 +63,7 @@ class FakeMPDClient:
     def __init__(self):
         self.timeout = None
         self.idletimeout = None
-        self.mpd_version = '0.23.5'
+        self.mpd_version = _MPDVersionString('0.23.5')
         self._connected = False
         self._playlist = []      # list[dict]: {'file', 'id', 'pos'}
         self._next_id = 1
@@ -58,6 +74,7 @@ class FakeMPDClient:
         self._random = 0
         self._repeat = 0
         self._single = 0
+        self._consume = 0
         self._library = []       # list[str] of file paths
         self._db_updates = 0
         self.call_log = []       # list[(method, args, kwargs)]
@@ -82,6 +99,7 @@ class FakeMPDClient:
             'random': str(self._random),
             'repeat': str(self._repeat),
             'single': str(self._single),
+            'consume': str(self._consume),
             'playlistlength': str(len(self._playlist)),
             'elapsed': f'{self._elapsed:.3f}',
         }
@@ -173,6 +191,46 @@ class FakeMPDClient:
     def single(self, val):
         self._single = int(val)
 
+    def consume(self, val):
+        """Set MPD consume mode (0/1). Tracks finished playback are removed."""
+        self._consume = int(val)
+        self.call_log.append(('consume', (val,), {}))
+
+    # playlist mutation
+    def delete(self, songid):
+        """Remove a song at the given playlist position.
+
+        Accepts either an int position or a string position (MPD's wire
+        format is strings). Resets ``_pos`` if the deleted song was
+        before/at the cursor.
+        """
+        pos = int(songid)
+        if 0 <= pos < len(self._playlist):
+            del self._playlist[pos]
+            # Re-index remaining entries' 'pos' field to stay consistent.
+            for i, entry in enumerate(self._playlist):
+                entry['pos'] = str(i)
+            if self._pos is not None:
+                if pos < self._pos:
+                    self._pos -= 1
+                elif pos == self._pos:
+                    if self._pos >= len(self._playlist):
+                        self._pos = None
+                        self._state = 'stop'
+                        self._elapsed = 0.0
+        self.call_log.append(('delete', (songid,), {}))
+
+    def shuffle(self):
+        """Shuffle the current playlist in-place; reset cursor to 0 if playing."""
+        import random as _random_mod
+        _random_mod.shuffle(self._playlist)
+        for i, entry in enumerate(self._playlist):
+            entry['pos'] = str(i)
+        if self._pos is not None:
+            self._pos = 0
+            self._elapsed = 0.0
+        self.call_log.append(('shuffle', (), {}))
+
     # database
     def update(self, uri=None):
         self._db_updates += 1
@@ -230,28 +288,91 @@ def fake_mpd_client():
 class FakePlugs:
     """Lightweight stand-in for ``jukebox.plugs``.
 
-    Captures registered functions in a ``registry`` keyed by
-    ``package.plugin.method`` and routes ``.call()`` lookups against it.
-    Decorators (``register``, ``initialize``, ``atexit``, ``tag``) are no-op
-    pass-throughs so importing modules under test does not raise.
+    Captures registered objects in a ``registry`` keyed by either
+    ``package.plugin`` (functions / class instances) or
+    ``package.plugin.method`` (class methods tagged via ``@plugs.tag``
+    or via ``register(auto_tag=True)``). ``.call()`` routes lookups
+    against the registry, mirroring the real ``plugs.call`` surface
+    closely enough for unit tests.
 
-    Useful when a test needs to *assert* what the plugin code registered,
-    rather than only that it could be imported.
+    Class registration (``@register`` on a class, or
+    ``@register(auto_tag=True)`` on a class) follows the real
+    ``plugs.py`` shape: the decorated class accepts a ``plugin_name``
+    keyword in its constructor, and every instance auto-registers
+    itself under ``package.plugin_name``. Methods are made callable
+    via ``call(package, plugin, method)`` if they were tagged with
+    ``@plugs.tag`` or if the class was registered with
+    ``auto_tag=True``.
+
+    Decorators ``initialize``, ``atexit`` remain no-op pass-throughs.
+
+    Useful when a test needs to *assert* what the plugin code
+    registered, rather than only that it could be imported.
     """
 
     def __init__(self):
+        # Maps 'package.plugin' -> function | class-instance
         self.registry = {}
         self.call_log = []
 
-    def register(self, f=None, *, name=None, package=None, **kwargs):
-        def _wrap(fn):
-            key_name = name or getattr(fn, '__name__', 'anonymous')
-            pkg = package or fn.__module__.split('.')[-1]
-            self.registry[f'{pkg}.{key_name}'] = fn
-            return fn
-        if f is None or not callable(f):
-            return _wrap
-        return _wrap(f)
+    # ---- function / instance registration --------------------------------
+    def _register_function(self, fn, name=None, package=None):
+        key_name = name or getattr(fn, '__name__', 'anonymous')
+        pkg = package or (fn.__module__.split('.')[-1] if fn.__module__ else 'anonymous')
+        self.registry[f'{pkg}.{key_name}'] = fn
+        return fn
+
+    # ---- class registration ----------------------------------------------
+    def _register_class(self, cls, auto_tag=False, package=None):
+        """Decorate a class so its instances auto-register on construction.
+
+        The returned class wraps ``__init__`` to accept a ``plugin_name``
+        keyword (and optional ``plugin_register=True``). On instantiation
+        the instance is registered under ``package.plugin_name``.
+
+        If ``auto_tag`` is true, every non-dunder method on the class is
+        marked ``plugs_callable = True`` (mirroring the real plugs
+        behavior) so ``call(package, plugin, method)`` will dispatch to
+        bound methods on the instance.
+        """
+        outer = self
+        pkg = package or (cls.__module__.split('.')[-1] if cls.__module__ else 'anonymous')
+
+        if auto_tag:
+            for attr_name in dir(cls):
+                if attr_name.startswith('_'):
+                    continue
+                attr = getattr(cls, attr_name, None)
+                if callable(attr):
+                    try:
+                        setattr(attr, 'plugs_callable', True)
+                    except (AttributeError, TypeError):
+                        # Built-in/slot wrappers can't be tagged; skip silently.
+                        pass
+
+        original_init = cls.__init__
+
+        def __init__(self, *args, plugin_name=None, plugin_register=True, **kwargs):
+            original_init(self, *args, **kwargs)
+            if plugin_register and plugin_name is not None:
+                outer.registry[f'{pkg}.{plugin_name}'] = self
+
+        cls.__init__ = __init__
+        cls.plugs_decorated = 1
+        cls.plugs_package = pkg
+        return cls
+
+    def register(self, f=None, *, name=None, package=None, auto_tag=False, **kwargs):
+        def _wrap(obj):
+            if inspect.isclass(obj):
+                return self._register_class(obj, auto_tag=auto_tag, package=package)
+            return self._register_function(obj, name=name, package=package)
+
+        # Called as bare decorator: @fake_plugs.register
+        if f is not None and (inspect.isclass(f) or callable(f)) and not isinstance(f, str):
+            return _wrap(f)
+        # Called with kwargs: @fake_plugs.register(name=..., auto_tag=...)
+        return _wrap
 
     def initialize(self, f):
         return f
@@ -260,15 +381,48 @@ class FakePlugs:
         return f
 
     def tag(self, f):
+        """Mark a method as plugs-callable. Mirrors ``plugs.tag``."""
+        try:
+            setattr(f, 'plugs_callable', True)
+        except (AttributeError, TypeError):
+            pass
         return f
 
     def call(self, package, plugin=None, method=None, *, args=(), kwargs=None):
         key = '.'.join(p for p in (package, plugin, method) if p)
         self.call_log.append((key, tuple(args), dict(kwargs or {})))
-        fn = self.registry.get(key)
-        if fn is None:
+
+        # Resolve the registry entry. Real plugs.call supports two shapes:
+        # - call(package, plugin) -> registered function / class instance
+        # - call(package, plugin, method) -> bound method on a registered
+        #   class instance (method must be plugs_callable).
+        # For test ergonomics we also accept call(package, method=name) where
+        # the caller knows the function-name only.
+        if plugin is None and method is not None:
+            obj = self.registry.get(f'{package}.{method}')
+            if obj is None:
+                return None
+            return obj(*args, **(kwargs or {}))
+
+        obj = self.registry.get(f'{package}.{plugin}') if plugin else None
+
+        if method is None:
+            if obj is None:
+                return None
+            return obj(*args, **(kwargs or {}))
+
+        # Three-part: package.plugin.method -> bound method on instance.
+        if obj is None:
             return None
-        return fn(*args, **(kwargs or {}))
+        bound = getattr(obj, method, None)
+        if bound is None:
+            return None
+        # Honor plugs_callable tagging for method dispatch.
+        if not getattr(bound, 'plugs_callable', False):
+            underlying = getattr(bound, '__func__', None)
+            if not getattr(underlying, 'plugs_callable', False):
+                return None
+        return bound(*args, **(kwargs or {}))
 
     def call_ignore_errors(self, package, plugin=None, method=None, *, args=(), kwargs=None):
         try:
