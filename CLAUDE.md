@@ -34,7 +34,7 @@ Reference the meta-plan; do not re-derive scope. End-of-phase: open PR, update `
 | 2 | Player coordination rewrite | done 2026-05-17 | [#4](https://github.com/azahradka/RPi-Jukebox-RFID/pull/4) |
 | 3a | playermpd cleanup + tests | in progress | PR open |
 | 3b | playerpodcast cleanup + tests | not started | |
-| 3c | playerspotify cleanup + tests | not started | |
+| 3c | playerspotify cleanup + tests | in progress | PR open |
 | 4 | Web UI quick wins | not started | |
 | 5a | Unified RPC contract (single source of truth) | not started | |
 | 5b | UI monolith breakups + socket pooling | not started | |

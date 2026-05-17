@@ -43,6 +43,11 @@ from jukebox.utils.atomic_io import atomic_write_json_safe
 from components.player.coordinator import get_coordinator
 from .spotify_auth import SpotifyAuthManager
 from .content_resolver import SpotifyContentResolver
+from .swipe_decision import (
+    SpotifySwipeContext,
+    SpotifySwipeDecision,
+    decide_spotify_swipe,
+)
 
 logger = logging.getLogger('jb.PlayerSpotify')
 cfg = jukebox.cfghandler.get_handler('jukebox')
@@ -113,6 +118,12 @@ class PlayerSpotify:
             self.player_status = {
                 'state': 'stopped',  # stopped, playing, paused
                 'last_played_uri': None,
+                # Phase 3c: track card-driven activations separately from
+                # in-app starts so play_card can distinguish a fresh swipe
+                # of a URI that was started via the web UI from a real
+                # second swipe. ``last_card_uri`` is None on cold start
+                # and only ever set by play_card.
+                'last_card_uri': None,
                 'current_track': None,
                 'current_queue': [],
                 'position_ms': 0,
@@ -120,6 +131,9 @@ class PlayerSpotify:
                 'shuffle': False,
                 'repeat': 'off'  # off, track, context
             }
+        # Ensure the field exists for state files saved before Phase 3c
+        # (older installs persisted player_status without last_card_uri).
+        self.player_status.setdefault('last_card_uri', None)
 
         # Second swipe action configuration
         second_swipe_option = cfg.getn('playerspotify', 'second_swipe_action', 'alias',
@@ -345,75 +359,162 @@ class PlayerSpotify:
                 pass
         return 30
 
-    def _status_publisher_loop(self):
-        """Background thread to publish player status
+    #: Adaptive-polling intervals (seconds). Documented here so the
+    #: status-publisher tests can pin them as the public contract of
+    #: the loop's pacing — changing these is a behaviour change.
+    _POLL_INTERVAL_PLAYING = 1.0
+    _POLL_INTERVAL_IDLE = 5.0
+    _POLL_INTERVAL_NO_CLIENT = 10.0
+    _ERROR_BACKOFF_BASE = 30.0
+    _ERROR_BACKOFF_MAX = 300.0
+    _RATE_LIMIT_MIN_BACKOFF = 30.0
 
-        Uses adaptive polling:
-        - 1 s  while playing
-        - 5 s  while paused / stopped / unauthenticated
-        - 30+ s after an API error (backs off on repeated errors)
+    def _status_publisher_loop(self):
+        """Background thread to publish player status.
+
+        Phase 3c: split into four sub-methods (``_fetch_status``,
+        ``_transform_status``, ``_publish_status``,
+        ``_handle_status_error_with_backoff``) so each is unit-testable
+        in isolation. The loop is now just the dispatch/scheduling skeleton.
+
+        Adaptive polling (intervals constants above):
+        - playing:                  ~1 s
+        - paused / stopped:         ~5 s
+        - no spotipy client yet:    ~10 s (slow heartbeat for publish gating)
+        - on API error:             back off 30 → 300 s, double on each
+        - on HTTP 429:              honour ``Retry-After`` (min 30 s)
+
+        Note (Phase 1 FU#3): the prior implementation kicked off a
+        one-shot ``_discover_device`` here as a "lazy first probe".
+        Phase 1's ``_ensure_device_for_activation`` already does a
+        bounded device search at activation time, which is the only
+        path that actually needs a device id (``play_content`` /
+        ``play_card``). The status loop merely *reads* a cached id
+        for publishing — it doesn't need one to fetch current
+        playback. Removing the lazy probe drops a duplicative API
+        call per process lifetime without changing observable
+        behaviour.
         """
         consecutive_errors = 0
 
-        # Initial device discovery (off the MainThread)
-        if self.sp_client and not self.player_status.get('device_id'):
-            try:
-                self._discover_device()
-            except Exception as e:
-                logger.debug(f"Initial device discovery failed: {e}")
-
         while not self.status_thread_stop.is_set():
-            interval = self._poll_status_once(consecutive_errors)
-            if interval < 0:
-                # Negative means success; absolute value is the real interval
+            interval, success = self._poll_status_once()
+            if success:
                 consecutive_errors = 0
-                interval = -interval
             else:
                 consecutive_errors += 1
+                # _poll_status_once returns the raw interval; for the
+                # generic error path we apply the consecutive-error
+                # backoff curve here so the unit tests of
+                # _handle_status_error_with_backoff see the curve
+                # directly (no positive/negative interval encoding).
+                interval = self._apply_error_backoff(interval, consecutive_errors)
             self.status_thread_stop.wait(timeout=interval)
 
     def _is_active(self):
         """Return True if Spotify is the active player."""
         return get_coordinator().current() == 'spotify'
 
-    def _poll_status_once(self, consecutive_errors):
+    # ------------------------------------------------------------------
+    # status_publisher_loop sub-methods (Phase 3c)
+    # ------------------------------------------------------------------
+
+    def _fetch_status(self):
+        """Pull current playback from Spotify into ``self.player_status``.
+
+        Raises :class:`SpotifyException` (and other exceptions) so the
+        caller can apply error-handling / backoff. Returns nothing.
+        """
+        self._fetch_and_update_status()
+
+    def _transform_status(self):
+        """Convert the cached ``player_status`` into MPD-format dict.
+
+        Pure function on ``self.player_status`` — no I/O. Separated so
+        tests can call it without spinning up the network mocks.
+        """
+        return self._to_mpd_status()
+
+    def _publish_status(self, mpd_status):
+        """Send a publish message *iff* Spotify is the active player.
+
+        Gating here avoids cross-talk with playermpd: when MPD owns
+        the slot, its publisher's playerstatus is canonical. Spotify
+        keeps its cached state up to date (so a future re-activation
+        knows what to resume) but doesn't pollute the UI's status
+        stream.
+        """
+        if self._is_active():
+            publishing.get_publisher().send('playerstatus', mpd_status)
+
+    def _handle_status_error_with_backoff(self, exc):
+        """Choose the next-poll interval after an exception.
+
+        Returns the raw interval seconds (no backoff curve yet — the
+        loop applies that based on consecutive error count). For HTTP
+        429 we honour ``Retry-After`` and return immediately; for
+        other errors we return :attr:`_ERROR_BACKOFF_BASE` and let
+        the loop's exponential curve take it from there.
+        """
+        if isinstance(exc, SpotifyException) and exc.http_status == 429:
+            interval = self._get_retry_after(exc)
+            logger.warning(f"Spotify rate-limited, backing off {interval}s")
+            # Signal "skip the consecutive-error curve" by returning
+            # the absolute interval marked with a sentinel via the
+            # caller. We do that by returning the Retry-After value
+            # directly; the loop's backoff helper recognises it.
+            return interval
+        logger.debug(f"Status poll error: {exc}")
+        return self._ERROR_BACKOFF_BASE
+
+    def _apply_error_backoff(self, base_interval, consecutive_errors):
+        """Apply the consecutive-error backoff curve.
+
+        For HTTP 429 the caller has already returned the
+        server-supplied Retry-After (≥30s); we don't multiply that.
+        For other errors, scale linearly with ``consecutive_errors``,
+        capped at ``_ERROR_BACKOFF_MAX``.
+
+        A simple heuristic distinguishes the two cases: 429's
+        Retry-After is always >= base by contract (see
+        ``_get_retry_after``), so if ``base_interval`` is already
+        above ``_ERROR_BACKOFF_BASE`` we don't apply the curve.
+        """
+        if base_interval > self._ERROR_BACKOFF_BASE:
+            return base_interval
+        return min(self._ERROR_BACKOFF_BASE * consecutive_errors,
+                   self._ERROR_BACKOFF_MAX)
+
+    def _poll_status_once(self):
         """Run one status-poll cycle.
 
-        Returns a negative interval on success (negate to get real interval)
-        or a positive interval on failure (for backoff).
-        Only publishes status when Spotify is the active player.
+        Returns ``(interval, success)``:
+        - ``interval`` is the next-sleep duration in seconds.
+        - ``success`` is True if the API call succeeded (or no
+          client is configured — that's a "no work" success).
+
+        The caller (the loop) uses ``success`` to reset the
+        consecutive-error counter.
         """
         if not self.sp_client:
-            if self._is_active():
-                publishing.get_publisher().send(
-                    'playerstatus', self._to_mpd_status())
-            return -10  # success, slow poll
+            # No authenticated client → publish whatever cached
+            # status we have so the UI knows we're idle.
+            self._publish_status(self._transform_status())
+            return self._POLL_INTERVAL_NO_CLIENT, True
 
         try:
-            self._fetch_and_update_status()
-            if self._is_active():
-                publishing.get_publisher().send(
-                    'playerstatus', self._to_mpd_status())
-            active = self.player_status.get('state') == 'playing'
-            return -(5 if active else 30)
-        except SpotifyException as e:
-            if self._is_active():
-                publishing.get_publisher().send(
-                    'playerstatus', self._to_mpd_status())
-            if e.http_status == 429:
-                interval = self._get_retry_after(e)
-                logger.warning(f"Spotify rate-limited, backing off {interval}s")
-                return interval
-            interval = min(30 * (consecutive_errors + 1), 300)
-            logger.debug(f"Status poll error: {e}")
-            return interval
-        except Exception as e:
-            if self._is_active():
-                publishing.get_publisher().send(
-                    'playerstatus', self._to_mpd_status())
-            interval = min(30 * (consecutive_errors + 1), 300)
-            logger.debug(f"Status poll error: {e}")
-            return interval
+            self._fetch_status()
+        except Exception as exc:
+            # Still publish cached status so the UI doesn't go
+            # stale during the error window.
+            self._publish_status(self._transform_status())
+            return self._handle_status_error_with_backoff(exc), False
+
+        self._publish_status(self._transform_status())
+        active = self.player_status.get('state') == 'playing'
+        interval = (self._POLL_INTERVAL_PLAYING if active
+                    else self._POLL_INTERVAL_IDLE)
+        return interval, True
 
     @plugs.tag
     def get_player_type_and_version(self):
@@ -1023,16 +1124,33 @@ class PlayerSpotify:
         """
         Play content triggered by RFID card with second swipe detection
 
+        Uses :func:`decide_spotify_swipe` (Phase 3c) so the rule is
+        observable in isolation. A swipe is treated as a SECOND_TOGGLE
+        only when (a) the URI matches the last played, (b) Spotify is
+        the active backend, and (c) the *previous* activation of this
+        URI also came from a card swipe. That third condition prevents
+        the common bug where the user started a URI from the web UI
+        and the first physical card swipe was misread as a second
+        swipe (and paused playback).
+
         Args:
             uri: Spotify URI
         """
         try:
-            last_uri = self.player_status.get('last_played_uri')
+            ctx = SpotifySwipeContext(
+                incoming_uri=uri,
+                last_played_uri=self.player_status.get('last_played_uri'),
+                last_card_uri=self.player_status.get('last_card_uri'),
+                coordinator_current=get_coordinator().current(),
+            )
+            decision = decide_spotify_swipe(ctx)
 
-            # Second swipe detection - only if Spotify is the active player.
-            # When switching FROM another player (podcast, MPD), always do
-            # a fresh play_content so the track actually starts.
-            if last_uri == uri and get_coordinator().current() == 'spotify':
+            # Either branch counts as the new most-recent card swipe.
+            # Stamp it BEFORE dispatch so a re-entrant call (toggle ->
+            # pause -> play) observes the up-to-date card pointer.
+            self.player_status['last_card_uri'] = uri
+
+            if decision is SpotifySwipeDecision.SECOND_TOGGLE:
                 logger.info(f"Second swipe detected for: {uri}")
                 self.second_swipe_action()
             else:

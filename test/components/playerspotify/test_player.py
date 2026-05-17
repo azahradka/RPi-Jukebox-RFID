@@ -142,10 +142,17 @@ def player(cfg_mock, mock_auth_manager, mock_sp_client, mock_content_resolver):
 
 
 def test_player_initialization(player):
-    """Test player initialization"""
+    """Test player initialization.
+
+    Phase 3c (Phase 1 follow-up #3): the status loop no longer kicks
+    off a lazy ``_discover_device`` call. Device discovery happens on
+    the activation path (``_ensure_device_for_activation``), so right
+    after construction the device_id is None — it will be populated
+    by the first ``play_content`` / ``play_card`` call.
+    """
     assert player.client_id == 'test_client_id'
     assert player.device_name == 'Phoniebox'
-    assert player.player_status['device_id'] == 'test_device_id'
+    assert player.player_status.get('device_id') is None
 
 
 def test_get_player_type_and_version(player):
@@ -303,14 +310,31 @@ def test_play_card_first_swipe(player, mock_sp_client, mock_content_resolver):
 
 
 def test_play_card_second_swipe(player, mock_sp_client):
-    """Test play card on second swipe (toggle)"""
+    """Test play card on second swipe (toggle).
+
+    Phase 3c: second-swipe semantics now require that the previous
+    activation was *via a card swipe* (``last_card_uri`` matches), not
+    just an in-app start. The fixture's mocked coordinator should
+    report Spotify as current (the default state) so the seam decides
+    SECOND_TOGGLE.
+    """
+    from components.player.coordinator import get_coordinator
     uri = 'spotify:playlist:test123'
     player.player_status['last_played_uri'] = uri
+    player.player_status['last_card_uri'] = uri  # prior swipe was a card
 
-    # Set up as playing
-    mock_sp_client.current_playback.return_value['is_playing'] = True
-
-    player.play_card(uri)
+    # Pin Spotify as the active backend for this test.
+    coord = get_coordinator()
+    with coord._lock:
+        prev = coord._current
+        coord._current = 'spotify'
+    try:
+        # Set up as playing
+        mock_sp_client.current_playback.return_value['is_playing'] = True
+        player.play_card(uri)
+    finally:
+        with coord._lock:
+            coord._current = prev
 
     # Should toggle (pause)
     mock_sp_client.pause_playback.assert_called_once()

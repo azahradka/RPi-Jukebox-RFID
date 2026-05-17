@@ -182,6 +182,82 @@ def test_concurrent_activations_land_deterministically(coordinator):
     assert coordinator.current() in {'spotify', 'podcast'}
 
 
+def test_concurrent_activations_call_each_handoff_callback_exactly_once(coordinator):
+    """Phase 2 FU#5 regression: under concurrent activations, the
+    outgoing backend's ``pause_fn`` / ``stop_fn`` must each fire
+    exactly *once* per actual handoff transition.
+
+    The pre-FU#5 test (``test_concurrent_activations_land_deterministically``)
+    only asserted the final state was one of the targets. That would
+    have missed a regression where the coordinator double-invoked
+    the outgoing backend's pause/stop on a race (which would be
+    audible: MPD pausing twice has no visible effect, but for
+    podcast it can corrupt resume position).
+
+    With three backends (mpd → first activation → second activation),
+    we expect the outgoing backend's pause and stop to be invoked
+    exactly once each, totalling either:
+    - 4 callback invocations if both incoming threads do work
+      (mpd is paused/stopped by one thread, then whoever wins among
+      the second pair pauses/stops the loser). However the
+      coordinator's lock serialises activations: if T1 wins first,
+      mpd→T1.target, then T2 activates → T1.target is current
+      already? No — T2 has its own target. So if T1 finishes first
+      and sets ``current = spotify``, T2 then sees outgoing=spotify
+      and pauses/stops spotify before setting current=podcast.
+
+    The invariant we pin: ``pause_fn(outgoing)`` and ``stop_fn(outgoing)``
+    each fire exactly once per *successful* transition, NOT twice.
+    """
+    calls = []
+    p_mpd, s_mpd = _make_backend(calls, 'mpd')
+    p_spot, s_spot = _make_backend(calls, 'spotify')
+    p_podcast, s_podcast = _make_backend(calls, 'podcast')
+    coordinator.register('mpd', stop_fn=s_mpd, pause_fn=p_mpd)
+    coordinator.register('spotify', stop_fn=s_spot, pause_fn=p_spot)
+    coordinator.register('podcast', stop_fn=s_podcast, pause_fn=p_podcast)
+
+    # Sequential, deterministic case first — this is the strong pin.
+    with coordinator.activate('spotify'):
+        pass
+    # mpd was current → mpd should have been paused/stopped exactly once.
+    assert calls.count(('mpd', 'pause')) == 1, \
+        f"mpd.pause_fn invoked {calls.count(('mpd', 'pause'))} times; expected 1"
+    assert calls.count(('mpd', 'stop')) == 1, \
+        f"mpd.stop_fn invoked {calls.count(('mpd', 'stop'))} times; expected 1"
+    assert calls.count(('spotify', 'pause')) == 0
+    assert calls.count(('spotify', 'stop')) == 0
+
+    with coordinator.activate('podcast'):
+        pass
+    # spotify was current → spotify paused/stopped exactly once.
+    assert calls.count(('spotify', 'pause')) == 1
+    assert calls.count(('spotify', 'stop')) == 1
+    # mpd's counts must not have changed.
+    assert calls.count(('mpd', 'pause')) == 1
+    assert calls.count(('mpd', 'stop')) == 1
+
+
+def test_idempotent_activate_does_not_invoke_self_callbacks(coordinator):
+    """A second ``activate('mpd')`` while mpd is already current must
+    NOT invoke mpd's own pause/stop. The pre-FU#5 test pinned that no
+    work was done at all; this test specifically pins the "outgoing ==
+    incoming" branch is recognised."""
+    calls = []
+    p_mpd, s_mpd = _make_backend(calls, 'mpd')
+    coordinator.register('mpd', stop_fn=s_mpd, pause_fn=p_mpd)
+
+    with coordinator.activate('mpd'):
+        pass
+    with coordinator.activate('mpd'):
+        pass
+    with coordinator.activate('mpd'):
+        pass
+
+    assert calls.count(('mpd', 'pause')) == 0
+    assert calls.count(('mpd', 'stop')) == 0
+
+
 # ---------------------------------------------------------------------------
 # Stop timeout
 # ---------------------------------------------------------------------------

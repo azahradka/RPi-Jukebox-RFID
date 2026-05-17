@@ -255,21 +255,72 @@ def test_no_cache(resolver_no_cache, mock_sp_client):
     assert mock_sp_client.playlist_items.call_count == 2
 
 
-@pytest.mark.skip(
-    reason="Pre-existing test bug exposed by Phase 0b CI broadening: production "
-    "content_resolver now supports 'show' URIs via _resolve_show(), which loops "
-    "while results.get('next') is truthy. The MagicMock sp_client returns a "
-    "MagicMock (always truthy) for .get('next'), so the test hangs forever. "
-    "Either the test's premise ('show is unsupported') is stale or _resolve_show "
-    "needs a mock that terminates pagination. Tracked for Phase 3c (playerspotify "
-    "cleanup + tests). See ~/.claude/plans/this-project-is-vaguely-wobbly-"
-    "abelson.md."
-)
-def test_unsupported_content_type(resolver):
-    """Test unsupported content type"""
-    uri = 'spotify:show:12345'  # Podcasts not supported
+def test_show_uri_resolves_to_episode_list(resolver, mock_sp_client):
+    """Phase 3c: ``show`` URIs are supported.
+
+    The test was previously skipped because the MagicMock returned a
+    truthy value for ``results.get('next')``, causing infinite
+    pagination in ``_resolve_show``. Pinning the pagination cursor to
+    a falsy ``next`` lets the loop terminate. The original name
+    ``test_unsupported_content_type`` was renamed because the premise
+    ("show is unsupported") is stale — production has supported show
+    URIs since the podcast integration landed.
+    """
+    show_id = '12345'
+    mock_sp_client.show_episodes.return_value = {
+        'items': [
+            {'uri': 'spotify:episode:ep1'},
+            {'uri': 'spotify:episode:ep2'},
+        ],
+        # CRITICAL: pin to falsy. A real MagicMock returns another
+        # MagicMock (truthy) for .get('next'), which would loop forever.
+        'next': None,
+    }
+    uri = f'spotify:show:{show_id}'
     result = resolver.resolve_uri(uri)
-    assert result == []
+    assert result == ['spotify:episode:ep1', 'spotify:episode:ep2']
+    mock_sp_client.show_episodes.assert_called_once_with(
+        show_id, offset=0, limit=50
+    )
+
+
+def test_show_uri_pagination_terminates_when_next_is_falsy(resolver, mock_sp_client):
+    """Multi-page show — verify the loop honours ``next``-cursor termination."""
+    mock_sp_client.show_episodes.side_effect = [
+        {
+            'items': [{'uri': f'spotify:episode:p1_{i}'} for i in range(50)],
+            'next': 'page2_url',
+        },
+        {
+            'items': [{'uri': 'spotify:episode:final'}],
+            'next': None,
+        },
+    ]
+    result = resolver.resolve_uri('spotify:show:multi_page_show')
+    assert len(result) == 51
+    assert result[-1] == 'spotify:episode:final'
+    assert mock_sp_client.show_episodes.call_count == 2
+
+
+def test_truly_unsupported_content_type_returns_empty_and_logs(resolver, caplog):
+    """A genuinely unsupported URI type returns ``[]`` and logs an error.
+
+    The Phase 3c rename of the formerly-skipped test demanded a clear
+    home for the "unsupported type" branch — ``resolve_uri`` raises
+    ``ValueError`` internally then catches it, returning ``[]``. This
+    test pins both the empty return and the error log.
+    """
+    import logging
+    original_parse = resolver._parse_uri
+    resolver._parse_uri = lambda uri: ('unknownkind', 'abc')
+    try:
+        with caplog.at_level(logging.ERROR, logger='jb.SpotifyResolver'):
+            result = resolver.resolve_uri('spotify:track:dontcare')
+        assert result == []
+        assert any('Unsupported content type' in r.getMessage()
+                   for r in caplog.records)
+    finally:
+        resolver._parse_uri = original_parse
 
 
 def test_api_error_handling(resolver, mock_sp_client):
