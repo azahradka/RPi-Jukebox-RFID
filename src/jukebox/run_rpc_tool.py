@@ -10,12 +10,19 @@ The tool features auto-completion and command history.
 
 The list of available commands is fetched from the running Jukebox service.
 
-.. todo:
-   - kwargs support
+One-shot mode supports JSON-encoded ``--args`` / ``--kwargs`` for action-bearing
+commands::
+
+    run_rpc_tool.py -c player.ctrl.play_folder \\
+        --args '["BeatlesAlbum"]' --kwargs '{"recursive": true}'
+
+The shapes match the YAML card-action format (``args: [...]``, ``kwargs: {}``).
 
 """
 
 import argparse
+import json
+import sys
 import zmq
 import curses
 import curses.ascii
@@ -309,11 +316,50 @@ def main(scr):
             scr.addstr(f"\n:: Response =\n{response}\n\n")
 
 
-def runcmd(cmd):
+def parse_json_args(raw_args, raw_kwargs):
+    """Parse the ``--args`` / ``--kwargs`` JSON strings into a list/dict pair.
+
+    Both are optional; ``None`` means "flag not supplied" and yields the
+    matching empty default (``[]`` / ``{}``). Malformed JSON or wrong shape
+    raises :class:`ValueError` with a message naming the offending flag
+    (suitable for direct ``argparse.ArgumentParser.error`` output).
     """
-    Just run a command.
-    Right now duplicates more or less main()
-    :todo remove duplication of code
+    if raw_args is None:
+        parsed_args = []
+    else:
+        try:
+            parsed_args = json.loads(raw_args)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"--args is not valid JSON: {e}") from e
+        if not isinstance(parsed_args, list):
+            raise ValueError(
+                f"--args must be a JSON list (got {type(parsed_args).__name__})")
+
+    if raw_kwargs is None:
+        parsed_kwargs = {}
+    else:
+        try:
+            parsed_kwargs = json.loads(raw_kwargs)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"--kwargs is not valid JSON: {e}") from e
+        if not isinstance(parsed_kwargs, dict):
+            raise ValueError(
+                f"--kwargs must be a JSON object (got {type(parsed_kwargs).__name__})")
+
+    return parsed_args, parsed_kwargs
+
+
+def runcmd(cmd, args=None, kwargs=None):
+    """Dispatch a single RPC command and print the response.
+
+    ``cmd`` is the dotted ``package.plugin[.method]`` identifier. ``args`` and
+    ``kwargs`` are passed straight through to
+    :py:meth:`jukebox.rpc.client.RpcClient.enque` and match the YAML
+    card-action format.
+
+    When ``args`` is ``None`` (no ``--args`` flag), positional tokens parsed
+    off ``cmd`` itself are used instead -- this preserves the historical
+    ``-c "volume.ctrl.set_volume 50"`` behaviour for zero-flag callers.
     """
 
     # Split on whitespaces to separate cmd and arg list
@@ -323,7 +369,13 @@ def runcmd(cmd):
     # Split cmd on '.' into package.plugin.method
     # Remove duplicate '.' along the way
     sl = [v for v in dec[0].split('.') if len(v) > 0]
-    fargs = [tonum(a) for a in dec[1:]]
+    if args is None:
+        # Back-compat: derive positional args from trailing whitespace tokens.
+        fargs = [tonum(a) for a in dec[1:]]
+    else:
+        # Explicit --args wins over any whitespace-split tokens in cmd.
+        fargs = args
+    fkwargs = kwargs
     response = None
     method = None
     if not (2 <= len(sl) <= 3):
@@ -332,7 +384,7 @@ def runcmd(cmd):
     if len(sl) == 3:
         method = sl[2]
     try:
-        response = client.enque(sl[0], sl[1], method, args=fargs)
+        response = client.enque(sl[0], sl[1], method, args=fargs, kwargs=fkwargs)
     except zmq.error.Again:
         print("\n\n" + '-' * 70 + "\n")
         print("Could not reach RPC Server. Jukebox running? Correct Port?\n")
@@ -345,7 +397,12 @@ def runcmd(cmd):
         print(f"\n:: Response =\n{response}\n\n")
 
 
-if __name__ == '__main__':
+def build_argparser():
+    """Build the argparse parser used by ``__main__``.
+
+    Factored out so tests can drive argparse directly without invoking
+    the curses REPL or opening a ZMQ socket.
+    """
     default_tcp = 5555
     default_ws = 5556
     url = f"tcp://localhost:{default_tcp}"
@@ -361,9 +418,34 @@ if __name__ == '__main__':
                             nargs='?', const=default_tcp,
                             metavar="PORT", default=None)
     port_group.add_argument("-c", "--command",
-                            help="Send command to Jukebox server",
+                            help="Send command to Jukebox server (one-shot mode)",
                             default=None)
+    argparser.add_argument("--args",
+                           help="JSON list of positional args for -c command "
+                                "(e.g. --args '[\"BeatlesAlbum\"]')",
+                           default=None)
+    argparser.add_argument("--kwargs",
+                           help="JSON object of keyword args for -c command "
+                                "(e.g. --kwargs '{\"recursive\": true}')",
+                           default=None)
+    return argparser
+
+
+if __name__ == '__main__':
+    default_tcp = 5555
+    default_ws = 5556
+    url = f"tcp://localhost:{default_tcp}"
+    argparser = build_argparser()
     args = argparser.parse_args()
+
+    if args.args is not None or args.kwargs is not None:
+        if args.command is None:
+            argparser.error("--args / --kwargs require -c / --command")
+
+    try:
+        parsed_args, parsed_kwargs = parse_json_args(args.args, args.kwargs)
+    except ValueError as e:
+        argparser.error(str(e))
 
     if args.websocket is not None:
         url = f"ws://localhost:{args.websocket}"
@@ -375,8 +457,12 @@ if __name__ == '__main__':
     client = rpc.RpcClient(url)
 
     if args.command is not None:
-        runcmd(args.command)
-        exit(0)
+        # Only forward flag-supplied args/kwargs; if the flags weren't given
+        # the back-compat whitespace-split path still applies.
+        runcmd(args.command,
+               args=parsed_args if args.args is not None else None,
+               kwargs=parsed_kwargs if args.kwargs is not None else None)
+        sys.exit(0)
     else:
         curses.wrapper(main)
 
