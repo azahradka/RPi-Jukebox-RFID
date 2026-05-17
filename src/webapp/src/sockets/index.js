@@ -116,8 +116,26 @@ const _initState = () => {
   });
 
   server.onerror = function (err) {
-    const { active } = _state;
-    if (active) _settle(active, err);
+    // Phase 5b reviewer ask #2: on socket error, reject EVERY pending
+    // slot (active + queued) and flip ``connected`` so the next call
+    // attempts a fresh ``connect()``. Previously only the active slot
+    // rejected — every queued request hung forever and the broken
+    // ``connected = true`` blocked reconnection.
+    const state = _state;
+    if (!state) return;
+    const queued = state.queue.splice(0, state.queue.length);
+    const activeSlot = state.active;
+    if (activeSlot) _settle(activeSlot, err);
+    queued.forEach((slot) => {
+      if (slot.settled) return;
+      slot.settled = true;
+      if (slot.timer) {
+        clearTimeout(slot.timer);
+        slot.timer = null;
+      }
+      slot.reject(err);
+    });
+    state.connected = false;
   };
 
   return _state;

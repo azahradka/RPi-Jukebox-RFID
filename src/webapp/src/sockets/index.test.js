@@ -168,6 +168,43 @@ describe('socketRequest (shared REQ socket)', () => {
   });
 });
 
+describe('socket error handling', () => {
+  it('drains the queue and resets connected on socket error (ask #2)', async () => {
+    // Phase 5b reviewer ask #2: previously only the *active* slot
+    // rejected on socket error; every queued slot hung forever and
+    // ``connected`` stayed true, so no reconnect ever happened.
+    //
+    // Reversion check: replace the new onerror body with
+    // ``if (active) _settle(active, err);`` and this test fails
+    // because p2/p3 never settle.
+    const p1 = sockets.socketRequest('p', 'pl', 'm', { tag: 1 });
+    const p2 = sockets.socketRequest('p', 'pl', 'm', { tag: 2 });
+    const p3 = sockets.socketRequest('p', 'pl', 'm', { tag: 3 });
+
+    const req = getReq();
+    // Sanity: only the first request is in flight; #2 and #3 are queued.
+    expect(req.sent).toHaveLength(1);
+
+    // Fire the socket error.
+    const err = new Error('socket exploded');
+    req._onerror(err);
+
+    await expect(p1).rejects.toThrow('socket exploded');
+    await expect(p2).rejects.toThrow('socket exploded');
+    await expect(p3).rejects.toThrow('socket exploded');
+
+    // Connected flag must have been cleared so the next dispatch will
+    // try to reconnect.
+    const p4 = sockets.socketRequest('p', 'pl', 'm', { tag: 4 });
+    // ``connect()`` is called again during dispatch — verify by sending
+    // a fresh reply via the same mock instance.
+    const sent4 = parseSent(req, 1);
+    expect(sent4.kwargs).toEqual({ tag: 4 });
+    req.__fire({ id: sent4.id, result: 'recovered' });
+    await expect(p4).resolves.toBe('recovered');
+  });
+});
+
 // Ensure encodeMessage is still wire-compatible (sanity check).
 describe('encodeMessage', () => {
   it('returns a parseable JSON string', () => {
