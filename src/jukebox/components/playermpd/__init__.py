@@ -130,6 +130,23 @@ logger = logging.getLogger('jb.PlayerMPD')
 cfg = jukebox.cfghandler.get_handler('jukebox')
 
 
+# Phase 6: per-plugin config schema (see jukebox.plug_schema). ``host``
+# is the only field whose absence would crash the MPD client wrapper
+# immediately on connect, so it's the only required field. Other
+# fields have defaults elsewhere in the code or are honoured if
+# present.
+plugs_config_section = ['playermpd']
+plugs_config_schema = {
+    'host': {
+        'type': str,
+        'required': True,
+    },
+    'status_file': str,
+    'music_library_path': str,
+    'second_swipe_action': dict,
+}
+
+
 class PlayerMPD:
     """Interface to MPD Music Player Daemon"""
 
