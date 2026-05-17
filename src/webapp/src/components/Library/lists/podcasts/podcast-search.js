@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Box,
@@ -17,6 +17,7 @@ import AddIcon from '@mui/icons-material/Add';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 
 import request from '../../../../utils/request';
+import useDebounce from '../../../../hooks/useDebounce';
 
 const PodcastSearch = ({ isSelecting, onSelectPodcast }) => {
   const { t } = useTranslation();
@@ -64,6 +65,16 @@ const PodcastSearch = ({ isSelecting, onSelectPodcast }) => {
     event.preventDefault();
     performSearch(searchQuery);
   };
+
+  // Phase 4: 300ms debounce on typed input so the iTunes search RPC
+  // doesn't fire on every keystroke. The submit button + Enter key
+  // still trigger an immediate search via ``handleSearchSubmit``.
+  const debouncedQuery = useDebounce(searchQuery, 300);
+  useEffect(() => {
+    if (debouncedQuery && debouncedQuery.trim().length >= 2) {
+      performSearch(debouncedQuery);
+    }
+  }, [debouncedQuery, performSearch]);
 
   const handleSelectPodcast = (podcast) => {
     if (onSelectPodcast) {
