@@ -95,6 +95,15 @@ jobs:
       run: |
         # Stop the build if linting fails
         ./run_flake8.sh
+    - name: Schema-vs-config drift check
+      run: |
+        # Phase 6 FU#1 (project_post_refactor_followups.md #1): assert
+        # every cfg.getn(SECTION, KEY, ...) read by a plugin appears in
+        # that plugin's plugs_config_schema. Pre-existing drift sits in
+        # a baseline allowlist inside the script itself; new drift
+        # fails the build with a per-plugin diff.
+        source ".venv/bin/activate"
+        python tools/check_schema_coverage.py
 
   finish:
     needs: build

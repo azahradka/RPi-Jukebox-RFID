@@ -120,3 +120,83 @@ def test_allowlist_entries_are_three_tuples():
         assert isinstance(pkg, str)
         assert isinstance(plug, str)
         assert method is None or isinstance(method, str)
+
+
+# ---------------------------------------------------------------------------
+# Regression C (2026-05-17): allowlist must point at real code
+# ---------------------------------------------------------------------------
+# The JS generator's validator is the canonical drift guard, but it
+# only runs at webapp build time. Add a Python-side static check that
+# every entry in KNOWN_PLUGIN_METHOD_ALLOWLIST corresponds to a real
+# Python definition somewhere under ``src/jukebox/``. Without this,
+# the allowlist could silently accumulate stale names (e.g. a method
+# renamed during a refactor) and the daemon would only surface the
+# ``Plugin object has not attribute`` at runtime on the affected
+# command.
+#
+# This check is static — it does NOT boot the plugin registry. It
+# only proves "the source code defines a callable with this name",
+# not "the registration is wired up correctly". The latter is the
+# JS validator's job. The static check catches the high-value case:
+# pure typo / rename drift in the allowlist.
+#
+# Reversion check: rename, say, ``get_state`` on ``IdleShutdownTimer``
+# to ``state`` and the parametrised test for
+# ``('timers', 'timer_idle_shutdown', 'get_state')`` fails with a
+# clear missing-symbol message.
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+# Where each allowlisted (package, plugin) backs onto Python source.
+# For flat modules (misc.py), we point at the module file; for class
+# instances registered via plugs.register(obj, name=...), we point at
+# the class definitions (whose methods must exist as Python defs).
+_ALLOWLIST_LOOKUP_PATHS = {
+    'misc': [_REPO_ROOT / 'src' / 'jukebox' / 'components' / 'misc.py'],
+    'timers': [
+        _REPO_ROOT / 'src' / 'jukebox' / 'jukebox' / 'multitimer.py',
+        _REPO_ROOT / 'src' / 'jukebox' / 'components' / 'timers' / '__init__.py',
+        _REPO_ROOT / 'src' / 'jukebox' / 'components' / 'timers' / 'idle_shutdown_timer.py',
+        _REPO_ROOT / 'src' / 'jukebox' / 'components' / 'timers' / 'volume_fadeout_shutdown_timer.py',
+    ],
+}
+
+
+@pytest.mark.parametrize("entry", sorted(KNOWN_PLUGIN_METHOD_ALLOWLIST))
+def test_allowlist_entry_has_backing_python_definition(entry):
+    """Each allowlist triple must point at a Python ``def`` in the source.
+
+    For 2-part triples (method is None), the plugin name itself must
+    exist as a module-level ``def``. For 3-part triples, the method
+    name must exist as a ``def`` in the package's lookup paths.
+
+    This is a typo / rename catcher — see module-level note above for
+    why we don't try to assert full registration correctness here.
+    """
+    import re
+
+    pkg, plug, method = entry
+    paths = _ALLOWLIST_LOOKUP_PATHS.get(pkg)
+    assert paths is not None, (
+        f"Allowlist references package {pkg!r} but the contract test "
+        f"has no lookup paths registered for it. Add an entry to "
+        f"_ALLOWLIST_LOOKUP_PATHS so this check can verify drift."
+    )
+
+    target_name = method if method is not None else plug
+    pattern = re.compile(rf"^\s*def\s+{re.escape(target_name)}\s*\(", re.MULTILINE)
+
+    matched = []
+    for path in paths:
+        if not path.exists():
+            continue
+        if pattern.search(path.read_text()):
+            matched.append(path)
+    assert matched, (
+        f"Allowlist entry {entry!r} has no backing ``def {target_name}(...)`` "
+        f"in any of: {[str(p) for p in paths]}.\n"
+        f"This usually means the method was renamed/removed but the "
+        f"allowlist was not updated. Update KNOWN_PLUGIN_METHOD_ALLOWLIST "
+        f"or fix the source."
+    )

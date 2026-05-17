@@ -22,10 +22,32 @@ if str(_JUKEBOX_SRC) not in sys.path:
 from jukebox.utils import paths as paths_mod  # noqa: E402
 
 
+# Item 6 (project_post_refactor_followups.md): on macOS this test file
+# has intermittently failed when run after certain other tests
+# (reproduces on main since Phase 6, doesn't manifest in Linux CI).
+# Suspected cause is the ``lru_cache`` on
+# ``paths._phoniebox_home_cached`` interacting with a stale
+# ``PHONIEBOX_HOME`` env var inherited from an outer test that
+# monkeypatched it but didn't clean up via its own fixture teardown.
+# The autouse fixture below clears both the cache AND any leaked env
+# var before each test runs. Less invasive than skipping the file
+# wholesale; if the issue resurfaces despite this, switch to
+# ``pytest.mark.skipif(platform.system() == 'Darwin', ...)`` per the
+# follow-up brief.
+
+
 @pytest.fixture(autouse=True)
-def _clear_home_cache():
-    """Each test should compute home fresh; tests mutate the env var."""
+def _clear_home_cache(monkeypatch):
+    """Each test should compute home fresh; tests mutate the env var.
+
+    Also clears any leaked ``PHONIEBOX_HOME`` env var that a prior
+    test in the same session may have set but not cleaned up — see
+    the Item 6 follow-up note above for the macOS isolation context.
+    """
     paths_mod.reset_phoniebox_home_cache()
+    # Defensive: clear leaked env var. monkeypatch auto-restores after
+    # the test, so this doesn't affect siblings.
+    monkeypatch.delenv(paths_mod.PHONIEBOX_HOME_ENV, raising=False)
     yield
     paths_mod.reset_phoniebox_home_cache()
 

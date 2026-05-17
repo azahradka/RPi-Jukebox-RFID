@@ -40,6 +40,27 @@ cfg_main = jukebox.cfghandler.get_handler('jukebox')
 cfg_cards = jukebox.cfghandler.get_handler('cards')
 
 
+def _normalize_legacy_cwd_path(filename: str) -> str:
+    """Strip a leading ``..`` chain from a legacy CWD-relative config path.
+
+    See ``components.rfid.cards._normalize_legacy_cwd_path`` for the
+    full background. Phase 6 anchored config paths under
+    :envvar:`PHONIEBOX_HOME` but the legacy ``reader_config`` default
+    in ``jukebox.default.yaml`` (``../../shared/settings/rfid.yaml``)
+    is CWD-relative and escapes the repo root under the new anchoring.
+    """
+    from pathlib import Path
+    p = Path(filename)
+    if p.is_absolute():
+        return filename
+    parts = list(p.parts)
+    if not parts or parts[0] != '..':
+        return filename
+    while parts and parts[0] == '..':
+        parts.pop(0)
+    return str(Path(*parts)) if parts else '.'
+
+
 class RfidCardDetectState(Enum):
     received = 0,
     isRegistered = 1
@@ -259,7 +280,13 @@ class ReaderRunner(threading.Thread):
 @plugs.finalize
 def finalize():
     try:
-        reader_config_file = cfg_main.getn('rfid', 'reader_config')
+        # Regression fix (2026-05-17): collapse legacy CWD-relative
+        # ``../../shared/...`` paths from jukebox.default.yaml so they
+        # resolve under PHONIEBOX_HOME rather than escaping the repo
+        # root. See _normalize_legacy_cwd_path docstring.
+        reader_config_file = _normalize_legacy_cwd_path(
+            cfg_main.getn('rfid', 'reader_config')
+        )
         jukebox.cfghandler.load_yaml(cfg_rfid, reader_config_file)
     except FileNotFoundError:
         cfg_rfid.config_dict({'rfid': {'readers': {}}})

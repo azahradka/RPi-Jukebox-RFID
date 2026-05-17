@@ -228,6 +228,33 @@ def scenario_mpd_swipes() -> None:
     # on the freshly-loaded store. First swipe of last-played card
     # must classify as FIRST. Without the clear-on-init the first
     # post-reboot swipe was misclassified as SECOND_TOGGLE.
+    #
+    # Known limitation (Item 8, project_post_refactor_followups.md #8):
+    # this scenario hand-calls ``clear_last_swiped_folder`` itself
+    # rather than exercising real ``PlayerMPD.__init__`` end-to-end,
+    # so a reversion of the init-time clear in ``PlayerMPD.__init__``
+    # would still pass this scenario. The decision-function
+    # (``decide_swipe``) regression IS locked by the assert below; the
+    # init-time wiring is NOT.
+    #
+    # Tried & decided against:
+    #   * Instantiating ``PlayerMPD`` directly — its ``__init__``
+    #     requires a live ``cfg`` handler, opens a TCP socket to MPD,
+    #     starts background threads, and resolves multiple cfg-driven
+    #     callable dictionaries. The setup needed to fake all that
+    #     here would dwarf the harness itself and reintroduce the
+    #     parallel-implementation smell Phase 3a explicitly avoided.
+    #   * A thin ``PlayerMPDInitProbe`` wrapper — would still have to
+    #     mirror the production init logic line-for-line, which is
+    #     exactly what Phase 3a deleted.
+    #
+    # Production coverage for the init-time clear lives in
+    # ``test/components/playermpd/test_playermpd_second_swipe.py``
+    # (specifically ``test_scenario_3_first_swipe_after_reboot_plays_not_pauses``,
+    # which exercises ``clear_last_swiped_folder`` over a realistic
+    # state-store snapshot). When Phase Item 3 (plug-time-coupling
+    # refactor) lands and makes PlayerMPD safer to construct in
+    # isolation, revisit this scenario and exercise __init__ directly.
     store.set_last_played_folder('audiofolders/Album-A')
     store.set_last_swiped_folder('audiofolders/Album-A')
     store.save()
@@ -235,6 +262,7 @@ def scenario_mpd_swipes() -> None:
     _check(rebooted.last_played_folder() == 'audiofolders/Album-A',
            'reboot: last_played should persist across re-instantiation')
     # Mirror PlayerMPD.__init__: clear the swipe marker, leave last_played.
+    # See limitation note above.
     rebooted.clear_last_swiped_folder()
     d5 = decide_swipe(rebooted, 'audiofolders/Album-A', second_swipe_action)
     _check(d5 is SwipeDecision.FIRST,

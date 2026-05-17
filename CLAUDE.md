@@ -37,9 +37,10 @@ Reference the meta-plan; do not re-derive scope. End-of-phase: open PR, update `
 | 3c | playerspotify cleanup + tests | done 2026-05-17 | [#6](https://github.com/azahradka/RPi-Jukebox-RFID/pull/6) |
 | 4 | Web UI quick wins | done 2026-05-17 | [#8](https://github.com/azahradka/RPi-Jukebox-RFID/pull/8) |
 | 5a | Unified RPC contract (single source of truth) | done 2026-05-17 | [#10](https://github.com/azahradka/RPi-Jukebox-RFID/pull/10) |
-| 5b | UI monolith breakups + socket pooling | in progress | PR open |
+| 5b | UI monolith breakups + socket pooling | done 2026-05-17 | [#12](https://github.com/azahradka/RPi-Jukebox-RFID/pull/12) |
 | 6 | Core framework polish (plugs/daemon/cfg validation) | done 2026-05-17 | [#9](https://github.com/azahradka/RPi-Jukebox-RFID/pull/9) |
-| 7 | Dev workflow (auto-sync, local smoke harness) | in progress | PR open, awaiting review |
+| 7 | Dev workflow (auto-sync, local smoke harness) | done 2026-05-17 | [#11](https://github.com/azahradka/RPi-Jukebox-RFID/pull/11) |
+| polish | Post-refactor polish + 3 RPi-surfaced regressions | in progress | PR open |
 
 **Status values:** `not started` → `in progress` → `done YYYY-MM-DD` → `blocked: <reason>`.
 
@@ -269,6 +270,17 @@ cd src/webapp && npm test
 ./tools/watch_and_sync.sh --once          # one-shot sync, no watch
 # Requires fswatch (brew install fswatch / apt install fswatch);
 # falls back to 2s polling if not installed.
+#
+# IMPORTANT — rsync --delete safety invariant:
+# watch_and_sync.sh runs ``rsync --delete`` on ``src/jukebox/`` from
+# your local checkout to the RPi. Every untracked source file living
+# under ``src/jukebox/`` on the RPi will be wiped on the next save.
+# Do NOT keep manual edits, experiments, or scratch files under
+# ``src/jukebox/`` on the RPi — they will disappear silently.
+# Operator state (logs, settings, audio files, podcast cache) lives
+# under ``shared/`` and is NOT touched by this sync. If you need a
+# scratch space on the RPi, put it anywhere outside ``src/jukebox/``
+# (``~/scratch/`` is a good convention).
 
 # Fast in-process smoke harness (Phase 7) — no daemon, no MPD, no
 # network. Exercises decide_swipe, decide_second_swipe,
