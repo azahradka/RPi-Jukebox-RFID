@@ -31,7 +31,12 @@ const __resetMockSocket = () => {
   Object.keys(__mockSocketResponses).forEach((k) => delete __mockSocketResponses[k]);
 };
 
-const socketRequest = jest.fn((_package, plugin, method, kwargs) => {
+// Note: do NOT wrap these in ``jest.fn(impl)``. Create React App 5 ships
+// with ``resetMocks: true`` enabled by default, which clears all
+// ``jest.fn`` implementations between tests. Plain functions keep their
+// behavior across tests and let ``__mockSocketLog`` / response routing
+// remain the source of truth for assertions.
+const socketRequest = (_package, plugin, method, kwargs) => {
   const key = [_package, plugin, method].filter(Boolean).join('.');
   __mockSocketLog.push({ key, kwargs });
   if (key in __mockSocketResponses) {
@@ -39,11 +44,11 @@ const socketRequest = jest.fn((_package, plugin, method, kwargs) => {
     return resp instanceof Error ? Promise.reject(resp) : Promise.resolve(resp);
   }
   return Promise.resolve(undefined);
-});
+};
 
-const initSockets = jest.fn(({ setState, events } = {}) => {
+const initSockets = ({ setState, events } = {}) => {
   __mockSubscribers.push({ setState, events });
-});
+};
 
 /**
  * Simulate a pubsub push from the backend.

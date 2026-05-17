@@ -11,9 +11,12 @@ import {
 } from './mockSocket';
 
 jest.mock('../sockets', () => require('./mockSocket'));
+// Note: avoid ``jest.fn(impl)`` here — Create React App 5 enables
+// ``resetMocks: true`` by default, which wipes mock implementations
+// between tests. A plain function keeps its behavior across the suite.
 jest.mock('../utils/request', () => ({
   __esModule: true,
-  default: jest.fn(() => Promise.resolve({ result: {} })),
+  default: () => Promise.resolve({ result: {} }),
 }));
 
 describe('test-utils smoke', () => {
