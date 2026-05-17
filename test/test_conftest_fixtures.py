@@ -34,11 +34,15 @@ def test_fake_mpd_client_seekcur(fake_mpd_client):
     assert ('seekcur', (42.5,), {}) in fake_mpd_client.call_log
 
 
-def test_fake_mpd_client_mpd_version_attribute_and_call(fake_mpd_client):
-    """mpd_version is normally an attribute on python-mpd2 but playermpd
-    currently calls it as a method; the fake must support both shapes."""
-    assert str(fake_mpd_client.mpd_version) == '0.23.5'
-    assert fake_mpd_client.mpd_version() == '0.23.5'
+def test_fake_mpd_client_mpd_version_attribute(fake_mpd_client):
+    """mpd_version is a plain string attribute on python-mpd2.
+
+    Phase 1 fix #3 corrected ``playermpd.get_player_type_and_version`` to
+    access it without parentheses; the Phase 0b callable-string shim is
+    therefore gone.
+    """
+    assert fake_mpd_client.mpd_version == '0.23.5'
+    assert isinstance(fake_mpd_client.mpd_version, str)
 
 
 def test_fake_mpd_client_consume(fake_mpd_client):

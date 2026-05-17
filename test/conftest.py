@@ -33,21 +33,6 @@ if str(_JUKEBOX_SRC) not in sys.path:
 # ---------------------------------------------------------------------------
 
 
-class _MPDVersionString(str):
-    """A version string that is also callable.
-
-    Real ``python-mpd2`` exposes ``MPDClient.mpd_version`` as a plain
-    attribute. ``playermpd/__init__.py`` currently invokes it as
-    ``self.mpd_client.mpd_version()`` (latent bug, slated for a Phase 1
-    correctness fix). This subclass lets the test fake work for both
-    access patterns: ``client.mpd_version`` returns the string,
-    ``client.mpd_version()`` also returns the string.
-    """
-
-    def __call__(self):
-        return str(self)
-
-
 class FakeMPDClient:
     """In-memory stand-in for ``python-mpd2``'s ``MPDClient``.
 
@@ -63,7 +48,8 @@ class FakeMPDClient:
     def __init__(self):
         self.timeout = None
         self.idletimeout = None
-        self.mpd_version = _MPDVersionString('0.23.5')
+        # python-mpd2 exposes ``mpd_version`` as a plain string attribute.
+        self.mpd_version = '0.23.5'
         self._connected = False
         self._playlist = []      # list[dict]: {'file', 'id', 'pos'}
         self._next_id = 1
