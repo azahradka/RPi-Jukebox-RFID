@@ -34,12 +34,10 @@ import pytest
 
 # Mock optional native deps that the podcast component imports
 # transitively (feedparser via feed_manager, requests via downloader).
-sys.modules.setdefault('feedparser', MagicMock())
-sys.modules.setdefault('requests', MagicMock())
-if 'components.player' not in sys.modules:
-    sys.modules['components.player'] = MagicMock()
-# Do NOT shadow ``components.player.coordinator`` - the real module
-# is needed by test/components/player/test_coordinator.py.
+# Do NOT pre-mock ``requests`` / ``feedparser`` at module level - both
+# are installed in the venv, and a module-level MagicMock for
+# ``requests`` pollutes sys.modules for later-collected test files
+# (playerspotify). Conftest handles ``components.player`` stubbing.
 
 from components.playerpodcast import PlayerPodcast  # noqa: E402
 

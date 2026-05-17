@@ -32,14 +32,10 @@ import pytest
 
 # Mock external dependencies for component import (conftest already
 # pre-mocks the jukebox framework but not feedparser/requests).
-sys.modules.setdefault('feedparser', MagicMock())
-sys.modules.setdefault('requests', MagicMock())
-# Provide a stub ``components.player`` if not already present (real
-# module needs MPD config). Do NOT shadow ``components.player.coordinator``
-# - tests in test/components/player/test_coordinator.py need the real
-# module, and sys.modules entries persist across tests.
-if 'components.player' not in sys.modules:
-    sys.modules['components.player'] = MagicMock()
+# Do NOT pre-mock ``requests`` / ``feedparser`` at module level - both
+# are installed in the venv, and a module-level MagicMock for
+# ``requests`` pollutes sys.modules for later-collected test files
+# (playerspotify). Conftest handles ``components.player`` stubbing.
 
 from components.playerpodcast import PlayerPodcast  # noqa: E402
 

@@ -32,14 +32,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-sys.modules.setdefault('feedparser', MagicMock())
-sys.modules.setdefault('requests', MagicMock())
-if 'components.player' not in sys.modules:
-    sys.modules['components.player'] = MagicMock()
-# Do NOT shadow ``components.player.coordinator`` - the fixture below
-# loads a fresh PlayerCoordinator and monkeypatches the podcast
-# module's get_coordinator reference, so we want the real module to
-# import normally.
+# Do NOT pre-mock ``requests`` / ``feedparser`` at module level here
+# - both are installed in the venv, and a module-level MagicMock for
+# ``requests`` pollutes sys.modules for later-collected test files
+# (e.g. playerspotify, where ``spotipy.oauth2`` does
+# ``isinstance(x, requests.Session)`` and that raises TypeError when
+# Session is a MagicMock instead of a class). Conftest pre-mocks
+# the jukebox framework and ``components.player`` only.
 
 from components.playerpodcast import PlayerPodcast  # noqa: E402
 
