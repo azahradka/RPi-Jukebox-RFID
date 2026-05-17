@@ -55,10 +55,12 @@ import spotipy  # noqa: E402
 
 try:
     from ruamel.yaml import YAML
+
     def _load_yaml(path):
         return YAML().load(open(path))
 except ImportError:
     import yaml
+
     def _load_yaml(path):  # noqa: F811
         with open(path) as f:
             return yaml.safe_load(f)

@@ -27,8 +27,8 @@ from spotipy.exceptions import SpotifyException
 # Add jukebox source to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / 'src' / 'jukebox'))
 
-from components.playerspotify.spotify_auth import SpotifyAuthManager
-from components.playerspotify.content_resolver import SpotifyContentResolver
+from components.playerspotify.spotify_auth import SpotifyAuthManager  # noqa: E402
+from components.playerspotify.content_resolver import SpotifyContentResolver  # noqa: E402
 
 # Well-known public Spotify content for testing
 # (these are unlikely to be removed)
@@ -135,7 +135,7 @@ class TestLiveAuth:
 
         # Force token to appear expired
         if auth.token_info:
-            original_token = auth.token_info['access_token']
+            original_token = auth.token_info['access_token']  # noqa: F841
             auth.token_info['expires_at'] = time.time() - 100
 
             # This should trigger a refresh

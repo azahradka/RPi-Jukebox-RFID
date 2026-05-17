@@ -9,8 +9,7 @@ in _resolve_playback_url() that plays a jingle during episode downloads.
 import sys
 import pytest
 import threading
-from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch, call
+from unittest.mock import Mock, MagicMock, patch
 
 # Mock external dependencies that __init__.py imports transitively
 # (feedparser via feed_manager, requests via episode_downloader)
@@ -20,7 +19,7 @@ sys.modules.setdefault('requests', MagicMock())
 sys.modules.setdefault('components.player', MagicMock())
 
 # conftest.py handles jukebox framework mocking before imports
-from components.playerpodcast import PlayerPodcast
+from components.playerpodcast import PlayerPodcast  # noqa: E402
 
 
 @pytest.fixture

@@ -6,16 +6,19 @@ on:
     - cron: '0 18 * * 0'
   push:
     branches:
+        - 'main'
         - 'future3/**'
+        - 'phase/**'
     paths:
         - '.github/workflows/test_build_webapp_v3.yml'
         - '.github/actions/build-webapp/**'
         - 'src/webapp/**'
   pull_request:
-    # The branches below must be a subset of the branches above
     branches:
+        - 'main'
         - future3/develop
         - future3/main
+        - 'phase/**'
     paths:
         - '.github/workflows/test_build_webapp_v3.yml'
         - '.github/actions/build-webapp/**'
@@ -31,3 +34,9 @@ jobs:
 
       - name: Build Web App
         uses: ./.github/actions/build-webapp
+
+      - name: Run React tests
+        working-directory: src/webapp
+        env:
+          CI: 'true'
+        run: npm test -- --watchAll=false --passWithNoTests

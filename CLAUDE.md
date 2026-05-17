@@ -28,8 +28,8 @@ Reference the meta-plan; do not re-derive scope. End-of-phase: open PR, update `
 
 | # | Phase | Status | PR / Notes |
 |---|-------|--------|------------|
-| 0a | SPEC.md | not started | |
-| 0b | Test scaffolding (Python + React) + CI coverage gate | not started | |
+| 0a | SPEC.md | done 2026-05-17 | [#1](https://github.com/azahradka/RPi-Jukebox-RFID/pull/1) |
+| 0b | Test scaffolding (Python + React) + CI coverage gate | in progress | PR open, awaiting review |
 | 1 | Critical correctness fixes (7 commits) | not started | |
 | 2 | Player coordination rewrite | not started | |
 | 3a | playermpd cleanup + tests | not started | |

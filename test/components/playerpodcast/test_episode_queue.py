@@ -4,15 +4,14 @@ Unit tests for Episode Queue Manager
 """
 
 import pytest
-from unittest.mock import Mock, MagicMock
-from datetime import datetime, timezone
+from unittest.mock import Mock
 
 # Import the module to test
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / 'src' / 'jukebox'))
 
-from components.playerpodcast.episode_queue import EpisodeQueueManager
+from components.playerpodcast.episode_queue import EpisodeQueueManager  # noqa: E402
 
 
 @pytest.fixture
