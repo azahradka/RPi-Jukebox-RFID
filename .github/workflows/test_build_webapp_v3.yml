@@ -35,8 +35,28 @@ jobs:
       - name: Build Web App
         uses: ./.github/actions/build-webapp
 
-      - name: Run React tests
+      - name: Run React tests with coverage
         working-directory: src/webapp
         env:
           CI: 'true'
-        run: npm test -- --watchAll=false --passWithNoTests
+          # Webapp coverage floor. Phase 0b established the React test
+          # scaffold (mockSocket, renderWithProviders) but no behavioural
+          # tests yet, so this gate stayed at 0. Phase 4 (Web UI quick
+          # wins) is the first phase shipping meaningful React tests:
+          # useSubscription + useDebounce hooks, page-scoped error
+          # boundaries, AppSettings refresh-on-save, Folders loading +
+          # error states, SpotifySearch debounce, Cards register
+          # re-render isolation. Measured ~19% statements / ~11% branches;
+          # floors set at 15% statements/functions/lines and 10% branches
+          # (branches lag because untested pages still have many
+          # conditional renders). Subsequent webapp phases ratchet up.
+          WEBAPP_COVERAGE_FLOOR_LINES: '15'
+          WEBAPP_COVERAGE_FLOOR_BRANCHES: '10'
+        run: |
+          npm test -- \
+            --watchAll=false \
+            --passWithNoTests \
+            --coverage \
+            --coverageReporters=text \
+            --coverageReporters=text-summary \
+            --coverageThreshold='{"global":{"statements":'"${WEBAPP_COVERAGE_FLOOR_LINES}"',"branches":'"${WEBAPP_COVERAGE_FLOOR_BRANCHES}"',"functions":'"${WEBAPP_COVERAGE_FLOOR_LINES}"',"lines":'"${WEBAPP_COVERAGE_FLOOR_LINES}"'}}'

@@ -1,4 +1,4 @@
-import React, { useContext } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -10,12 +10,12 @@ import {
 
 import FavoriteIcon from '@mui/icons-material/Favorite';
 
-import PubSubContext from '../../../context/pubsub/context';
+import useSubscription from '../../../hooks/useSubscription';
 
 const StatusVersion = () => {
   const { t } = useTranslation();
 
-  const { state: { 'core.version': coreVersion } } = useContext(PubSubContext);
+  const coreVersion = useSubscription('core.version');
 
   return (
     <ListItem disableGutters>

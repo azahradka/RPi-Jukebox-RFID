@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Box,
@@ -18,6 +18,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 
 import request from '../../../../utils/request';
+import useDebounce from '../../../../hooks/useDebounce';
 
 const TYPE_LABELS = {
   track: 'Song',
@@ -87,6 +88,16 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
     performSearch(searchQuery);
   };
 
+  // Phase 4: debounce typed queries by 300ms so we don't fire an RPC on
+  // every keystroke. The submit button + Enter key still trigger an
+  // immediate search via ``handleSearchSubmit``.
+  const debouncedQuery = useDebounce(searchQuery, 300);
+  useEffect(() => {
+    if (debouncedQuery && debouncedQuery.trim().length >= 2) {
+      performSearch(debouncedQuery);
+    }
+  }, [debouncedQuery, performSearch]);
+
   return (
     <Box sx={{ width: '100%' }}>
       <form onSubmit={handleSearchSubmit}>
@@ -137,7 +148,11 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
       )}
 
       {isSearching && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+        <Box
+          sx={{ display: 'flex', justifyContent: 'center', py: 4 }}
+          data-testid="spotify-search-loading"
+          aria-label={t('spotify.search.loading', 'Searching Spotify')}
+        >
           <CircularProgress />
         </Box>
       )}

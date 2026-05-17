@@ -1,4 +1,4 @@
-import React, { useContext } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -6,15 +6,13 @@ import {
   ListItemText,
 } from '@mui/material';
 
-import PubSubContext from '../../../context/pubsub/context';
+import useSubscription from '../../../hooks/useSubscription';
 
 const StatusCpuTemp = () => {
   const { t } = useTranslation();
 
-  const { state: {
-    'host.timer.cputemp': hostTimerCputemp,
-    'host.temperature.cpu': hostTemperatureCpu
-  } } = useContext(PubSubContext);
+  const hostTimerCputemp = useSubscription('host.timer.cputemp');
+  const hostTemperatureCpu = useSubscription('host.temperature.cpu');
 
   let primaryText = t('settings.status.cpu-temp.unavailable');
 

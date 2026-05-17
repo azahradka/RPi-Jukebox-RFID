@@ -1,34 +1,57 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { without } from 'ramda';
 
 import PubSubContext from './context';
+import createPubSubStore from './store';
 import { initSockets } from '../../sockets';
 import { SUBSCRIPTIONS } from '../../config';
 
+/**
+ * Phase 4 (Web UI quick wins): re-render fix.
+ *
+ * The previous implementation held all PubSub topics in a single
+ * ``useState`` object inside this provider. Any backend push (e.g.
+ * ``volume.level`` while dragging the volume slider) forced every
+ * ``useContext(PubSubContext)`` consumer — including the entire Cards
+ * page — to re-render.
+ *
+ * The provider now owns a topic-keyed store with per-topic subscribers
+ * (see ``store.js``). Consumers read individual topics via
+ * ``useSubscription(topic)`` (see ``src/hooks/useSubscription.js``) which
+ * uses ``useSyncExternalStore`` to re-render only on changes to that
+ * topic.
+ *
+ * The context value (``{ store, setState }``) is stable for the lifetime
+ * of the provider, so context consumers no longer re-render at all when
+ * topics update; they only re-render through their own
+ * ``useSubscription`` calls.
+ */
 const PubSubProvider = ({ children }) => {
-  const [state, setState] = useState({});
+  // ``useRef`` keeps the store stable across renders (vs ``useMemo`` which
+  // React is allowed to discard).
+  const storeRef = useRef();
+  if (!storeRef.current) {
+    storeRef.current = createPubSubStore();
+  }
+  const store = storeRef.current;
 
-  // Initialize sockets for player context
   useEffect(() => {
     initSockets({
       events: without(['playerstatus'], SUBSCRIPTIONS),
-      setState,
+      setState: store.setState,
     });
-  }, []);
+  }, [store]);
 
-  const context = {
-    setState,
-    state,
-  };
+  const context = useMemo(
+    () => ({ store, setState: store.setState }),
+    [store],
+  );
 
-  // Should be called <PlayerFunctions.Provider />
-  // and `state` should be moved to PlayerStatus.Provider
-
-  return(
-      <PubSubContext.Provider value={context}>
-        { children }
-      </PubSubContext.Provider>
-    )
+  return (
+    <PubSubContext.Provider value={context}>
+      {children}
+    </PubSubContext.Provider>
+  );
 };
 
 export default PubSubProvider;
