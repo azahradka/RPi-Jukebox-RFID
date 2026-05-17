@@ -277,8 +277,11 @@ class ReaderRunner(threading.Thread):
         self._logger.debug("Stop listening!")
 
 
-@plugs.finalize
 def finalize():
+    """Load reader config and start ReaderRunner threads.
+
+    Registered via :func:`init_plugin` (Item 3).
+    """
     try:
         # Regression fix (2026-05-17): collapse legacy CWD-relative
         # ``../../shared/...`` paths from jukebox.default.yaml so they
@@ -303,8 +306,8 @@ def finalize():
             _READERS[reader_cfg_key].start()
 
 
-@plugs.atexit
 def atexit(**ignored_kwargs):
+    """Stop ReaderRunner threads. Registered via :func:`init_plugin`."""
     # For all parallel readers, call the stop function
     for reader in _READERS.values():
         reader.stop()
@@ -312,3 +315,9 @@ def atexit(**ignored_kwargs):
     # Probably yes, in case Readers add default values?
     # Changed values of buzzer etc through a later user if?
     return _READERS.values()
+
+
+def init_plugin():
+    """Register the rfid reader plugin's lifecycle hooks (Item 3)."""
+    plugs.finalize(finalize)
+    plugs.atexit(atexit)

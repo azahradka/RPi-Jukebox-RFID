@@ -60,7 +60,6 @@ def _normalize_legacy_cwd_path(filename: str) -> str:
     return str(Path(*parts)) if parts else '.'
 
 
-@plugs.register
 def list_cards():
     """Provide a summarized, decoded list of all card actions
 
@@ -96,7 +95,6 @@ def list_cards():
     return card_list
 
 
-@plugs.register
 def delete_card(card_id: str, auto_save: bool = True):
     """
 
@@ -116,7 +114,6 @@ def delete_card(card_id: str, auto_save: bool = True):
     publishing.get_publisher().send(f'{plugs.loaded_as(__name__)}.database.has_changed', time.ctime())
 
 
-@plugs.register
 def register_card(card_id: str, cmd_alias: str,
                   args: Optional[List] = None, kwargs: Optional[Dict] = None,
                   ignore_card_removal_action: Optional[bool] = None, ignore_same_id_delay: Optional[bool] = None,
@@ -157,7 +154,6 @@ def register_card(card_id: str, cmd_alias: str,
     publishing.get_publisher().send(f'{plugs.loaded_as(__name__)}.database.has_changed', time.ctime())
 
 
-@plugs.register
 def register_card_custom():
     """Register a new card with full RPC call specification (Not implemented yet)"""
     raise NotImplementedError
@@ -172,7 +168,6 @@ def check_card_database():
             # TODO: Further checks for illegal entries?
 
 
-@plugs.register
 def load_card_database(filename):
     try:
         cfg_cards.load(filename)
@@ -185,7 +180,6 @@ def load_card_database(filename):
     publishing.get_publisher().send(f'{plugs.loaded_as(__name__)}.database.has_changed', time.ctime())
 
 
-@plugs.register
 def save_card_database(filename=None, *, only_if_changed=True):
     """Store the current card database. If filename is None, it is saved back to the file it was loaded from"""
     if filename is None:
@@ -194,7 +188,6 @@ def save_card_database(filename=None, *, only_if_changed=True):
         jukebox.cfghandler.write_yaml(cfg_cards, filename, only_if_changed=only_if_changed)
 
 
-@plugs.finalize
 def finalize():
     # Regression fix (2026-05-17): the YAML default for card_database is
     # ``../../shared/settings/cards.yaml`` (legacy CWD-relative — written
@@ -209,6 +202,23 @@ def finalize():
     load_card_database(card_database)
 
 
-@plugs.atexit
 def atexit(**ignored_kwargs):
     save_card_database(only_if_changed=True)
+
+
+def init_plugin():
+    """Register the cards plugin's callables and lifecycle hooks.
+
+    Item 3 (plug-time-coupling refactor): all plugs registrations
+    happen here, called by ``plugs.load`` after schema validation.
+    The module body is purely declarative so a plain
+    ``import components.rfid.cards`` performs no plugs side effects.
+    """
+    plugs.register(list_cards)
+    plugs.register(delete_card)
+    plugs.register(register_card)
+    plugs.register(register_card_custom)
+    plugs.register(load_card_database)
+    plugs.register(save_card_database)
+    plugs.finalize(finalize)
+    plugs.atexit(atexit)
