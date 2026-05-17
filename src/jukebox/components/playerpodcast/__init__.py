@@ -61,6 +61,33 @@ logger = logging.getLogger('jb.PlayerPodcast')
 cfg = jukebox.cfghandler.get_handler('jukebox')
 
 
+# Phase 6: per-plugin config schema (see jukebox.plug_schema). All
+# fields are optional — every config key has a sensible default in
+# ``PlayerPodcast.__init__``. The schema only enforces types so a
+# typo like ``feed_cache_ttl: "3600"`` surfaces immediately instead
+# of biting at first download.
+plugs_config_section = ['playerpodcast']
+plugs_config_schema = {
+    'status_file': str,
+    'feed_cache_path': str,
+    'feed_cache_ttl': int,
+    'save_position_interval': int,
+    'completion_threshold': float,
+    'episode_order': {
+        'type': str,
+        'choices': ['newest_first', 'oldest_first'],
+    },
+    'itunes_api': {
+        'type': dict,
+        'schema': {
+            'enabled': bool,
+            'base_url': str,
+            'timeout': int,
+        },
+    },
+}
+
+
 def log_rpc_method(func):
     """Decorator to log RPC method entry/exit with timing"""
     @functools.wraps(func)

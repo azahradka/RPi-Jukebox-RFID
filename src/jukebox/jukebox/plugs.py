@@ -577,6 +577,13 @@ def load(package: str, load_as: Optional[str] = None, prefix: Optional[str] = No
     Python packages may be loaded under a different plugs package name. Python packages must be unique and the name under
     which they are loaded as plugin package also.
 
+    Phase 6: between module import and the ``@plugs.initialize``
+    callbacks, the loader checks the imported module for
+    ``plugs_config_schema`` / ``plugs_validate`` and validates the
+    plugin's config section. A :class:`PluginSchemaError` short-circuits
+    the initializer chain so misconfiguration surfaces structurally
+    instead of as a ``KeyError`` deep in the initializer.
+
     :param package: Python package to load as plugin package
     :param load_as: Plugin package registration name. If None the name is the python's package simple name
     :param prefix: Prefix to python package to create fully qualified name. This is used only to locate the python package
@@ -611,6 +618,15 @@ def load(package: str, load_as: Optional[str] = None, prefix: Optional[str] = No
         logger.error(f"Failed to load package: {package}")
         raise e
 
+    # Phase 6: schema-validate the config section before running
+    # initializers. If the module declares no schema, this is a no-op.
+    try:
+        _validate_plugin_config(load_as)
+    except Exception as e:
+        _PLUGINS_FAILED[load_as] = PluginPackageClass(package)
+        logger.error(f"Plugin '{load_as}' config schema validation failed: {e}")
+        raise
+
     for func in _PLUGINS[load_as].initializer:
         logger.debug(f"Package load initializer: calling {load_as}.{func.__name__}()")
         try:
@@ -618,6 +634,25 @@ def load(package: str, load_as: Optional[str] = None, prefix: Optional[str] = No
         except Exception as e:
             _PLUGINS_FAILED[load_as] = PluginPackageClass(package)
             raise e
+
+
+def _validate_plugin_config(load_as: str) -> None:
+    """Hook into the plugin loader: validate the just-imported module's config.
+
+    Phase 6: per-plugin schema validation. Plugins opt in via
+    ``plugs_config_schema`` / ``plugs_validate`` attributes on their
+    module. See :mod:`jukebox.plug_schema` for the schema language.
+
+    Imported lazily to avoid pulling cfghandler at module-load time of
+    ``plugs.py`` itself.
+    """
+    # Lazy imports so plugs.py can still be imported in tests / tools
+    # that don't have a full jukebox config handler set up.
+    from jukebox.plug_schema import validate_loaded_plugin_module
+    import jukebox.cfghandler
+    module = _PLUGINS[load_as].module
+    cfg = jukebox.cfghandler.get_handler('jukebox')
+    validate_loaded_plugin_module(load_as, module, cfg)
 
 
 def load_all_named(packages_named: Mapping[str, str], prefix: Optional[str] = None, ignore_errors=False):

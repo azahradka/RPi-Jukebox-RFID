@@ -77,6 +77,35 @@ logger = logging.getLogger('jb.PlayerSpotify')
 cfg = jukebox.cfghandler.get_handler('jukebox')
 
 
+# Phase 6: per-plugin config schema (see jukebox.plug_schema).
+# Spotify is graceful about missing credentials (loads in unconfigured
+# state and waits for the Web UI to set them), so nothing here is
+# ``required``. The schema's job is to catch type mistakes — e.g.
+# ``client_id: true`` from a copy-paste mishap — before the auth
+# manager surfaces a less-helpful error.
+plugs_config_section = ['playerspotify']
+plugs_config_schema = {
+    'client_id': str,
+    'client_secret': str,
+    'redirect_uri': str,
+    'device_name': str,
+    'credential_file': str,
+    'status_file': str,
+    'cache_enabled': bool,
+    'cache_path': str,
+    'second_swipe_action': {
+        'type': dict,
+        'schema': {
+            'alias': {
+                'type': str,
+                'choices': ['toggle', 'play', 'skip', 'rewind',
+                            'replay', 'none'],
+            },
+        },
+    },
+}
+
+
 class PlayerSpotify:
     """Spotify Player Plugin - mirrors playermpd interface"""
 

@@ -15,6 +15,25 @@ from jukebox.callingback import CallbackHandler
 
 log = logging.getLogger('jb.rfid')
 
+
+# Phase 6: per-plugin config schema (see jukebox.plug_schema). Only
+# the keys the daemon needs at plugin-load time. Reader-specific
+# config (under ``rfid.readers.<key>``) lives in a separate YAML file
+# and is validated by each reader implementation as it loads.
+plugs_config_section = ['rfid']
+plugs_config_schema = {
+    'reader_config': {
+        'type': str,
+        'required': True,
+    },
+    # Phase 6: configurable timeout for reader read_card() loop
+    # heartbeat logging. See ReaderBaseClass.WAIT_TIMEOUT_DEFAULT_S.
+    'wait_for_tag_timeout_s': {
+        'type': float,
+        'required': False,
+    },
+}
+
 _READERS = {}
 cfg_rfid = jukebox.cfghandler.get_handler('rfid')
 cfg_main = jukebox.cfghandler.get_handler('jukebox')
