@@ -1377,9 +1377,12 @@ class PlayerSpotify:
 player_ctrl = None
 
 
-@plugs.initialize
 def initialize():
-    """Initialize Spotify player plugin"""
+    """Initialize Spotify player plugin.
+
+    Item 3: the ``@plugs.initialize`` decorator is applied inside
+    :func:`init_plugin`.
+    """
     global player_ctrl
     player_ctrl = PlayerSpotify()
     plugs.register(player_ctrl, name='ctrl')
@@ -1407,9 +1410,14 @@ def initialize():
     logger.info("Spotify player plugin registered as 'playerspotify.ctrl'")
 
 
-@plugs.atexit
 def atexit(**ignored_kwargs):
-    """Cleanup on exit"""
+    """Cleanup on exit. Registered via :func:`init_plugin`."""
     global player_ctrl
     if player_ctrl:
         return player_ctrl.exit()
+
+
+def init_plugin():
+    """Register initializer and atexit with plugs (Item 3)."""
+    plugs.initialize(initialize)
+    plugs.atexit(atexit)
