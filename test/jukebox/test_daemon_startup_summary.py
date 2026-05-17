@@ -47,8 +47,56 @@ _JUKEBOX_SRC = _REPO_ROOT / 'src' / 'jukebox'
 if str(_JUKEBOX_SRC) not in sys.path:
     sys.path.insert(0, str(_JUKEBOX_SRC))
 
+
+def _stub_zmq_if_missing():
+    """Stub ``zmq`` + the publishing IOLoop import path so we can import
+    ``jukebox.daemon`` on CI runners that don't compile PyZMQ.
+
+    The CI workflow comments out ``pyzmq`` in ``requirements.txt`` —
+    the production install script compiles it from source on the RPi
+    for websocket support, but CI doesn't have it available. The
+    startup-summary helpers don't actually USE zmq at runtime (they
+    go through the ``plugin.call_ignore_errors`` indirection), so
+    stubbing the module is safe for this test file.
+    """
+    import importlib as _importlib
+    import types as _types
+    try:
+        _importlib.import_module('zmq')
+        return
+    except ImportError:
+        pass
+    fake_zmq = _types.ModuleType('zmq')
+    fake_zmq.__version__ = '0.0.0-stub'
+    # Anything referenced from ``jukebox.publishing.server`` at import
+    # time. The publisher class itself isn't instantiated in these
+    # tests so we don't have to fake behaviour.
+    for attr in ('PUB', 'REP', 'REQ', 'PUSH', 'PULL', 'LINGER',
+                 'SNDHWM', 'RCVHWM', 'SUBSCRIBE', 'SUB'):
+        setattr(fake_zmq, attr, 0)
+    fake_zmq.Context = lambda *a, **kw: None  # type: ignore[assignment]
+    fake_zmq.Socket = type('Socket', (), {})
+
+    fake_zmq_error = _types.ModuleType('zmq.error')
+    fake_zmq_error.ZMQError = type('ZMQError', (Exception,), {})
+    fake_zmq.error = fake_zmq_error
+
+    fake_evloop = _types.ModuleType('zmq.eventloop')
+    fake_evloop.__path__ = []  # mark as package
+    fake_ioloop = _types.ModuleType('zmq.eventloop.ioloop')
+    fake_ioloop.IOLoop = type('IOLoop', (), {})
+
+    sys.modules['zmq'] = fake_zmq
+    sys.modules['zmq.error'] = fake_zmq_error
+    sys.modules['zmq.eventloop'] = fake_evloop
+    sys.modules['zmq.eventloop.ioloop'] = fake_ioloop
+
+
+_stub_zmq_if_missing()
+
 # Import daemon module directly. Its top-level imports pull in plugs,
-# publishing, etc. — those are all importable without booting plugins.
+# publishing, etc. — those are all importable without booting plugins
+# once zmq is stubbed (if needed) above.
 import jukebox.daemon as daemon_mod  # noqa: E402
 
 
