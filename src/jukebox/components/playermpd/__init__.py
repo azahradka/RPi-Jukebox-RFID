@@ -83,7 +83,6 @@ sudo -u mpd speaker-test -t wav -c 2
 
 import os
 import mpd
-import threading
 import logging
 import time
 import functools
@@ -101,43 +100,10 @@ import misc
 from .playcontentcallback import PlayContentCallbacks, PlayCardState
 from .coverart_cache_manager import CoverartCacheManager
 from .state_store import MPDStateStore
+from .mpd_client import MPDClientWrapper
 
 logger = logging.getLogger('jb.PlayerMPD')
 cfg = jukebox.cfghandler.get_handler('jukebox')
-
-
-class MpdLock:
-    def __init__(self, client: mpd.MPDClient, host: str, port: int):
-        self._lock = threading.RLock()
-        self.client = client
-        self.host = host
-        self.port = port
-
-    def _try_connect(self):
-        try:
-            self.client.connect(self.host, self.port)
-        except mpd.base.ConnectionError:
-            pass
-
-    def __enter__(self):
-        self._lock.acquire()
-        self._try_connect()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self._lock.release()
-
-    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
-        locked = self._lock.acquire(blocking, timeout)
-        if locked:
-            self._try_connect()
-        return locked
-
-    def release(self):
-        self._lock.release()
-
-    def locked(self):
-        return self._lock.locked()
 
 
 class PlayerMPD:
@@ -198,6 +164,11 @@ class PlayerMPD:
         # in any relevant matter anyway
         self.mpd_client.timeout = None               # network timeout in seconds (floats allowed), default: None
         self.mpd_client.idletimeout = None           # timeout for fetching the result of the idle command
+        # MPDClientWrapper (Phase 3a) owns the wire mutex + lazy-reconnect
+        # path. ``self.mpd_lock`` is kept as an alias so the dozens of
+        # ``with self.mpd_lock:`` call sites need no churn.
+        self.mpd_wrapper = MPDClientWrapper(self.mpd_client, self.mpd_host, 6600)
+        self.mpd_lock = self.mpd_wrapper
         self.connect()
         logger.info(f"Connected to MPD Version: {self.mpd_client.mpd_version}")
 
@@ -227,7 +198,6 @@ class PlayerMPD:
         self.old_song = None
         self.mpd_status = {}
         self.mpd_status_poll_interval = 0.25
-        self.mpd_lock = MpdLock(self.mpd_client, self.mpd_host, 6600)
         # ``state_lock`` (from MPDStateStore) guards mutations of
         # ``music_player_status``, ``current_folder_status``, and
         # ``mpd_status`` between the poll thread and RPC threads. Distinct
@@ -274,7 +244,7 @@ class PlayerMPD:
         return self.status_thread.timer_thread
 
     def connect(self):
-        self.mpd_client.connect(self.mpd_host, 6600)
+        self.mpd_wrapper.connect()
 
     def decode_2nd_swipe_option(self):
         cfg_2nd_swipe_action = cfg.setndefault('playermpd', 'second_swipe_action', 'alias', value='none').lower()
@@ -293,20 +263,15 @@ class PlayerMPD:
                                                          custom_action['kwargs'])
 
     def mpd_retry_with_mutex(self, mpd_cmd, *args):
-        """
-        This method adds thread saftey for acceses to mpd via a mutex lock,
-        it shall be used for each access to mpd to ensure thread safety
-        In case of a communication error the connection will be reestablished and the pending command will be repeated 2 times
+        """Thin pass-through to :meth:`MPDClientWrapper.call_with_retry`.
 
-        I think this should be refactored to a decorator
+        Phase 3a moved the lock + error-swallow logic into the wrapper.
+        This shim is kept for two reasons: (1) it is part of the
+        class's public surface and other plugs may reach for it, and
+        (2) the name is referenced by source-grep tests we don't want
+        to churn in this commit.
         """
-        with self.mpd_lock:
-            try:
-                value = mpd_cmd(*args)
-            except Exception as e:
-                logger.error(f"{e.__class__.__qualname__}: {e}")
-                value = None
-        return value
+        return self.mpd_wrapper.call_with_retry(mpd_cmd, *args)
 
     def _activate_mpd(self):
         """Claim the active-player slot via the coordinator.
