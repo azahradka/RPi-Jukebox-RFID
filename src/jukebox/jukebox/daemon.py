@@ -16,6 +16,7 @@ from jukebox.rpc.server import RpcServer
 
 import jukebox
 import jukebox.cfghandler
+from jukebox.utils.paths import resolve_under_home
 
 logger = logging.getLogger('jb.daemon')
 cfg = jukebox.cfghandler.get_handler('jukebox')
@@ -44,7 +45,12 @@ class JukeBox:
 
         self._signal_cnt = 0
         self.rpc_server = None
-        jukebox.cfghandler.load_yaml(cfg, configuration_file)
+        # Phase 6: anchor the configuration path under PHONIEBOX_HOME so
+        # a relative path (e.g. 'shared/settings/jukebox.yaml') resolves
+        # regardless of the working directory the daemon was launched
+        # from. Absolute paths pass through unchanged.
+        resolved_config = str(resolve_under_home(configuration_file))
+        jukebox.cfghandler.load_yaml(cfg, resolved_config)
 
         self.write_artifacts = write_artifacts
 
@@ -277,12 +283,11 @@ class JukeBox:
             # rpc_command_reference.txt
             # rpc_command_alias_reference.txt
 
-            artifacts_dir = '../../shared/artifacts/'
+            # Phase 6: anchor under PHONIEBOX_HOME so this works
+            # regardless of the cwd the daemon was launched from.
+            artifacts_dir = str(resolve_under_home('shared/artifacts'))
 
-            try:
-                os.mkdir(artifacts_dir)
-            except FileExistsError:
-                pass
+            os.makedirs(artifacts_dir, exist_ok=True)
 
             with open(os.path.join(artifacts_dir, 'rpc_command_reference.txt'), 'w') as stream:
                 plugin.dump_plugins(stream)

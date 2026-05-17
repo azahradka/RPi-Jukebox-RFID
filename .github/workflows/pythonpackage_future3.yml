@@ -75,8 +75,12 @@ jobs:
         # seam, real-exercise lock-release tests, coordinator-pinning
         # tests, and the coordinator double-invoke regression test;
         # ~2% headroom).
+        # Phase 6 ratchets to 53% (measured ~56% on Python 3.11 after
+        # adding paths / plug_schema / readerbase heartbeat / jingle
+        # lock-release / cfghandler getn / BackoffPolicy tests;
+        # ~3% headroom).
         # Subsequent phases ratchet up as they add tests.
-        COVERAGE_FAIL_UNDER: '50'
+        COVERAGE_FAIL_UNDER: '53'
       run: |
         ./run_pytest.sh --cov --cov-report xml --cov-config=.coveragerc --cov-fail-under=${COVERAGE_FAIL_UNDER}
     - name: Report to Coveralls (parallel)

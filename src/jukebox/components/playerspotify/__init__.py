@@ -26,13 +26,14 @@ References:
 - https://developer.spotify.com/documentation/web-api/
 """
 
+import enum
 import json
 import logging
 import os
 import subprocess
 import threading
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 import spotipy
 from spotipy.exceptions import SpotifyException
 
@@ -49,8 +50,61 @@ from .swipe_decision import (
     decide_spotify_swipe,
 )
 
+
+class BackoffPolicy(enum.Enum):
+    """How :meth:`PlayerSpotify._apply_error_backoff` should treat an interval.
+
+    Phase 6 / Phase 3c FU#1: previously the 429-vs-generic distinction
+    was inferred from the *magnitude* of the requested base interval
+    (``base > _ERROR_BACKOFF_BASE``). A 429 with ``Retry-After: 30`` —
+    i.e. exactly the floor — fell into the generic-error multiplication
+    branch and slept ``30 * N`` rather than the contract-stipulated 30.
+    Strictly more conservative than the API contract, but wrong; under a
+    sustained 429 storm we'd back off well past what the server asked
+    for. This typed enum makes the distinction explicit instead of
+    magnitude-encoded.
+
+    - ``RETRY_AFTER`` — the interval is the value the server told us to
+      wait. Pass it through untouched; never multiply by the consecutive
+      error count.
+    - ``EXPONENTIAL`` — generic error. Multiply by the consecutive
+      error count and cap at ``_ERROR_BACKOFF_MAX``.
+    """
+    RETRY_AFTER = 'retry_after'
+    EXPONENTIAL = 'exponential'
+
+
 logger = logging.getLogger('jb.PlayerSpotify')
 cfg = jukebox.cfghandler.get_handler('jukebox')
+
+
+# Phase 6: per-plugin config schema (see jukebox.plug_schema).
+# Spotify is graceful about missing credentials (loads in unconfigured
+# state and waits for the Web UI to set them), so nothing here is
+# ``required``. The schema's job is to catch type mistakes — e.g.
+# ``client_id: true`` from a copy-paste mishap — before the auth
+# manager surfaces a less-helpful error.
+plugs_config_section = ['playerspotify']
+plugs_config_schema = {
+    'client_id': str,
+    'client_secret': str,
+    'redirect_uri': str,
+    'device_name': str,
+    'credential_file': str,
+    'status_file': str,
+    'cache_enabled': bool,
+    'cache_path': str,
+    'second_swipe_action': {
+        'type': dict,
+        'schema': {
+            'alias': {
+                'type': str,
+                'choices': ['toggle', 'play', 'skip', 'rewind',
+                            'replay', 'none'],
+            },
+        },
+    },
+}
 
 
 class PlayerSpotify:
@@ -396,19 +450,20 @@ class PlayerSpotify:
         behaviour.
         """
         consecutive_errors = 0
+        # Phase 6 / Phase 3c FU#1: success cycles use EXPONENTIAL as
+        # the carrier policy (effectively unused — interval is the
+        # raw poll cadence). On error cycles, _poll_status_once
+        # returns the policy from _handle_status_error_with_backoff.
+        policy = BackoffPolicy.EXPONENTIAL
 
         while not self.status_thread_stop.is_set():
-            interval, success = self._poll_status_once()
+            interval, success, policy = self._poll_status_once()
             if success:
                 consecutive_errors = 0
             else:
                 consecutive_errors += 1
-                # _poll_status_once returns the raw interval; for the
-                # generic error path we apply the consecutive-error
-                # backoff curve here so the unit tests of
-                # _handle_status_error_with_backoff see the curve
-                # directly (no positive/negative interval encoding).
-                interval = self._apply_error_backoff(interval, consecutive_errors)
+                interval = self._apply_error_backoff(
+                    interval, consecutive_errors, policy)
             self.status_thread_stop.wait(timeout=interval)
 
     def _is_active(self):
@@ -447,40 +502,49 @@ class PlayerSpotify:
         if self._is_active():
             publishing.get_publisher().send('playerstatus', mpd_status)
 
-    def _handle_status_error_with_backoff(self, exc):
+    def _handle_status_error_with_backoff(self, exc) -> Tuple[float, BackoffPolicy]:
         """Choose the next-poll interval after an exception.
 
-        Returns the raw interval seconds (no backoff curve yet — the
-        loop applies that based on consecutive error count). For HTTP
-        429 we honour ``Retry-After`` and return immediately; for
-        other errors we return :attr:`_ERROR_BACKOFF_BASE` and let
-        the loop's exponential curve take it from there.
+        Phase 6 / Phase 3c FU#1: returns a ``(interval, policy)``
+        tuple instead of a bare interval. The policy is the typed
+        :class:`BackoffPolicy` value the loop uses to decide whether to
+        apply the consecutive-error multiplier. Magnitude-encoded
+        distinction (``base > _ERROR_BACKOFF_BASE``) was fragile — a
+        429 with ``Retry-After: 30`` (exactly the floor) was
+        indistinguishable from a generic error wanting the base
+        interval and got multiplied.
+
+        For HTTP 429 we honour ``Retry-After`` and return
+        :class:`BackoffPolicy.RETRY_AFTER` so the loop passes the
+        interval through untouched. For all other errors we return
+        :attr:`_ERROR_BACKOFF_BASE` with
+        :class:`BackoffPolicy.EXPONENTIAL` so the loop multiplies by
+        the consecutive-error count.
         """
         if isinstance(exc, SpotifyException) and exc.http_status == 429:
             interval = self._get_retry_after(exc)
             logger.warning(f"Spotify rate-limited, backing off {interval}s")
-            # Signal "skip the consecutive-error curve" by returning
-            # the absolute interval marked with a sentinel via the
-            # caller. We do that by returning the Retry-After value
-            # directly; the loop's backoff helper recognises it.
-            return interval
+            return interval, BackoffPolicy.RETRY_AFTER
         logger.debug(f"Status poll error: {exc}")
-        return self._ERROR_BACKOFF_BASE
+        return self._ERROR_BACKOFF_BASE, BackoffPolicy.EXPONENTIAL
 
-    def _apply_error_backoff(self, base_interval, consecutive_errors):
+    def _apply_error_backoff(self, base_interval, consecutive_errors,
+                             policy: BackoffPolicy = BackoffPolicy.EXPONENTIAL):
         """Apply the consecutive-error backoff curve.
 
-        For HTTP 429 the caller has already returned the
-        server-supplied Retry-After (≥30s); we don't multiply that.
-        For other errors, scale linearly with ``consecutive_errors``,
-        capped at ``_ERROR_BACKOFF_MAX``.
+        Phase 6 / Phase 3c FU#1: ``policy`` is now an explicit typed
+        :class:`BackoffPolicy`. The previous magnitude-based heuristic
+        ``base_interval > _ERROR_BACKOFF_BASE`` mis-routed a 429 with
+        ``Retry-After: 30`` (exactly the floor) into the multiplication
+        branch — a 5th consecutive 429-at-floor would sleep 150 s, not
+        the server-requested 30 s.
 
-        A simple heuristic distinguishes the two cases: 429's
-        Retry-After is always >= base by contract (see
-        ``_get_retry_after``), so if ``base_interval`` is already
-        above ``_ERROR_BACKOFF_BASE`` we don't apply the curve.
+        - :attr:`BackoffPolicy.RETRY_AFTER` — pass ``base_interval``
+          through unchanged.
+        - :attr:`BackoffPolicy.EXPONENTIAL` — multiply by
+          ``consecutive_errors`` and cap at ``_ERROR_BACKOFF_MAX``.
         """
-        if base_interval > self._ERROR_BACKOFF_BASE:
+        if policy is BackoffPolicy.RETRY_AFTER:
             return base_interval
         return min(self._ERROR_BACKOFF_BASE * consecutive_errors,
                    self._ERROR_BACKOFF_MAX)
@@ -488,19 +552,24 @@ class PlayerSpotify:
     def _poll_status_once(self):
         """Run one status-poll cycle.
 
-        Returns ``(interval, success)``:
+        Returns ``(interval, success, policy)``:
         - ``interval`` is the next-sleep duration in seconds.
         - ``success`` is True if the API call succeeded (or no
           client is configured — that's a "no work" success).
+        - ``policy`` is the :class:`BackoffPolicy` the loop applies
+          on error cycles. Success cycles return EXPONENTIAL as a
+          carrier value (the loop ignores ``policy`` when success).
 
-        The caller (the loop) uses ``success`` to reset the
-        consecutive-error counter.
+        Phase 6 / Phase 3c FU#1: the third tuple element makes the
+        429-vs-generic distinction explicit so the loop can pin a
+        429 with ``Retry-After: 30`` (exactly the error-base floor)
+        from being multiplied by the consecutive-error count.
         """
         if not self.sp_client:
             # No authenticated client → publish whatever cached
             # status we have so the UI knows we're idle.
             self._publish_status(self._transform_status())
-            return self._POLL_INTERVAL_NO_CLIENT, True
+            return self._POLL_INTERVAL_NO_CLIENT, True, BackoffPolicy.EXPONENTIAL
 
         try:
             self._fetch_status()
@@ -508,13 +577,14 @@ class PlayerSpotify:
             # Still publish cached status so the UI doesn't go
             # stale during the error window.
             self._publish_status(self._transform_status())
-            return self._handle_status_error_with_backoff(exc), False
+            interval, policy = self._handle_status_error_with_backoff(exc)
+            return interval, False, policy
 
         self._publish_status(self._transform_status())
         active = self.player_status.get('state') == 'playing'
         interval = (self._POLL_INTERVAL_PLAYING if active
                     else self._POLL_INTERVAL_IDLE)
-        return interval, True
+        return interval, True, BackoffPolicy.EXPONENTIAL
 
     @plugs.tag
     def get_player_type_and_version(self):
