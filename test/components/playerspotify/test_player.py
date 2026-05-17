@@ -142,10 +142,17 @@ def player(cfg_mock, mock_auth_manager, mock_sp_client, mock_content_resolver):
 
 
 def test_player_initialization(player):
-    """Test player initialization"""
+    """Test player initialization.
+
+    Phase 3c (Phase 1 follow-up #3): the status loop no longer kicks
+    off a lazy ``_discover_device`` call. Device discovery happens on
+    the activation path (``_ensure_device_for_activation``), so right
+    after construction the device_id is None — it will be populated
+    by the first ``play_content`` / ``play_card`` call.
+    """
     assert player.client_id == 'test_client_id'
     assert player.device_name == 'Phoniebox'
-    assert player.player_status['device_id'] == 'test_device_id'
+    assert player.player_status.get('device_id') is None
 
 
 def test_get_player_type_and_version(player):
