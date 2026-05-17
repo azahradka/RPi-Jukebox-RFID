@@ -68,9 +68,11 @@ jobs:
     - name: Run pytest with coverage
       env:
         # Coverage floor: hardening roadmap Phase 0b establishes the gate;
-        # Phase 1 ratcheted to 42% (measured ~43% on Python 3.11; 1% headroom).
+        # Phase 1 ratcheted to 42% (measured ~43%); Phase 3a ratchets to
+        # 43% (measured ~45% on Python 3.11 after MPDStateStore +
+        # MPDClientWrapper + play_card / second-swipe tests; ~2% headroom).
         # Subsequent phases ratchet up as they add tests.
-        COVERAGE_FAIL_UNDER: '42'
+        COVERAGE_FAIL_UNDER: '43'
       run: |
         ./run_pytest.sh --cov --cov-report xml --cov-config=.coveragerc --cov-fail-under=${COVERAGE_FAIL_UNDER}
     - name: Report to Coveralls (parallel)

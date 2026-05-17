@@ -22,6 +22,44 @@ The :class:`PlayerCoordinator` owns:
 Status publishers gate on ``coordinator.current() == self.name``
 instead of the prior ``get_active_player() == 'mpd'`` pattern.
 The semantics are unchanged; the racy module global is gone.
+
+Activation vs. passive control (Phase 3a decision)
+--------------------------------------------------
+
+Backends decide which of their RPCs constitute *activation events*.
+The rule pinned by Phase 3a, applied uniformly across backends:
+
+  **Activation events** -- RPCs that start, restart, or resume a
+  playback session. Every such RPC MUST call ``coordinator.activate()``
+  so handoff (pause-then-stop of the outgoing backend) runs before
+  the new playback begins. In ``playermpd``: ``play``, ``play_single``,
+  ``resume``, ``play_folder``, ``play_album``, and transitively
+  ``play_card`` (via ``play_folder``). ``replay`` /
+  ``replay_if_stopped`` also delegate to ``play_folder``, so they
+  inherit activation.
+
+  **Passive controls** -- RPCs that *modify* an already-playing
+  session without changing which backend owns it. They MUST NOT call
+  ``activate()``. In ``playermpd``: ``shuffle``, ``repeat``,
+  ``volume`` (set / mute), ``seek`` / ``seekcur``, ``next`` /
+  ``prev`` / ``stop`` / ``pause`` / ``toggle``. The rationale is
+  asymmetric: if the user has already handed off to a different
+  backend, re-claiming on a passive op would *steal* playback
+  silently. The only safe re-claim point is one initiated by the
+  user (a play/resume RPC, an RFID swipe).
+
+  **Edge case**: ``next`` / ``prev`` look like activation (they start
+  audible playback) but they only re-acquire the wire mutex; the
+  *active backend* is whatever the coordinator says. If MPD is
+  inactive and the user calls ``next``, the call goes to MPD's
+  wire but Spotify (or whoever is current) keeps producing audio.
+  This is preserved Phase 2 behaviour and matches the long-standing
+  UI contract: "next" on MPD's controls advances MPD's queue, even
+  if it's not the audible backend.
+
+This rule is also documented at the top of
+``components.playermpd/__init__.py``; podcast and Spotify backends
+have their own per-backend application of the same principle.
 """
 
 from __future__ import annotations
