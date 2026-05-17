@@ -51,6 +51,11 @@ from .feed_manager import PodcastFeedManager
 from .episode_queue import EpisodeQueueManager
 from .state_manager import PodcastStateManager
 from .episode_downloader import EpisodeDownloadManager
+from .playback_state import (
+    SecondSwipeDecision,
+    build_queue_plan,
+    decide_second_swipe,
+)
 
 logger = logging.getLogger('jb.PlayerPodcast')
 cfg = jukebox.cfghandler.get_handler('jukebox')
@@ -254,17 +259,44 @@ class PlayerPodcast:
         the coordinator's 5s stop timeout. Idempotent when podcast
         is already current.
 
-        Note: podcast plays *through* MPD, so when MPD is the
-        outgoing backend the coordinator will call MPD's stop_fn
-        (the cleanest baseline). The subsequent ``play_single`` call
-        then drives MPD with the new episode.
+        Phase 2 FU#2 decision: **podcast pins itself as the active
+        backend for the duration of an episode** (option (a) from the
+        meta-plan's two choices). The rationale:
+
+        * The user-facing model is "I tapped a podcast card; the
+          podcast is playing". ``coordinator.current()`` should match
+          that mental model so the UI gates podcast-specific status
+          rendering correctly, and the next cross-backend handoff
+          pauses+stops *podcast* (saving its resume position) rather
+          than MPD.
+        * Podcast plays *through* MPD's wire but the user-facing
+          backend is ``'podcast'``. Letting MPD's ``play_single``
+          run ``_activate_mpd()`` would race the coordinator back to
+          ``'mpd'``, and the next handoff (Spotify activation) would
+          pause+stop *MPD* instead of *podcast* - losing the resume
+          position the position-tracking thread persists.
+
+        To keep podcast pinned, every podcast operation that drives
+        MPD uses passive variants on playermpd
+        (``play_single_passive`` instead of ``play_single``;
+        ``pause(0)`` instead of ``play``) which do not call
+        ``_activate_mpd``. The user-facing handlers ``play()`` /
+        ``pause()`` / ``next()`` / ``prev()`` /
+        ``_toggle_playback()`` re-pin podcast first via this method
+        so any drift back to MPD self-heals on the next user
+        interaction.
         """
         with get_coordinator().activate('podcast'):
             pass
 
     def _toggle_playback(self):
-        """Toggle MPD playback state"""
+        """Toggle MPD playback state.
+
+        Re-pins podcast as active (Phase 2 FU#2 decision) before
+        delegating to MPD so the coordinator stays in sync with the
+        user-facing state."""
         try:
+            self._activate_podcast()
             plugs.call('player', 'ctrl', 'toggle')
             logger.info("Toggled podcast playback")
         except Exception as e:
@@ -286,7 +318,7 @@ class PlayerPodcast:
         # not the MPD wire — holding it across plugs.call would block
         # every status RPC into this plugin for the duration of the
         # call and risks recursive deadlocks.
-        plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+        plugs.call('player', 'ctrl', 'play_single_passive', args=(playback_url,))
 
         with self.lock:
             self.current_episode_guid = episode_guid
@@ -515,10 +547,35 @@ class PlayerPodcast:
     def _play_wav_direct(filename):
         """Play a WAV file directly via ALSA, bypassing the plugs lock.
 
-        The jingle plugin's play() acquires the plugs module lock for volume
-        save/restore, which causes deadlocks when called from a background
-        thread while the status poll also contends for the lock. Playing
-        directly to ALSA avoids this entirely."""
+        Kept post-Phase 1/2/3b - here is the rationale:
+
+        Phase 1 fixed the ``self.lock``-while-``plugs.call`` deadlocks
+        inside the podcast plugin itself, and Phase 2's lock-release
+        sweep extended that to every podcast call site. Neither phase
+        touched the **plugs module lock** (``jukebox.plugs._lock_module``),
+        which is what makes the jingle plugin a problem here.
+
+        The chain is: the jingle plugin's ``play()`` runs in a worker
+        thread and acquires the plugs module lock for *three* RPCs
+        (get_volume, set_volume(jingle_volume), set_volume(active_volume)
+        after the playback returns). The middle one - the actual
+        ``factory.auto(filename).play(filename)`` call - holds the
+        thread for the full duration of the WAV. During a podcast
+        download (10-60 seconds while the waiting jingle plays), the
+        plugs module lock is therefore unavailable to anyone, which
+        starves the status publisher and stalls the Web UI. RLock
+        semantics don't help: the status thread is a different thread,
+        not a re-entrant caller.
+
+        The fix would have to live in ``components.jingle`` (release
+        the lock before the blocking play, then re-acquire for the
+        volume restore - or hold the volume change *only* across the
+        set/restore, not across the play). That's out of scope for
+        Phase 3b (Phase 6: "Core framework polish"). Until then, the
+        podcast plugin bypasses ``jingle.play`` for the waiting jingle
+        and writes ALSA frames directly. Tests for this method live
+        in ``test_waiting_jingle.py``.
+        """
         try:
             import wave
             import alsaaudio
@@ -572,31 +629,35 @@ class PlayerPodcast:
         try:
             logger.info(f"Playing podcast series: {feed_url}")
 
-            # Second tap detection: if the same podcast is actually playing,
-            # delegate to the configured second_swipe_action (default: toggle).
-            # Must verify MPD state to avoid stale playback_active flag.
-            #
-            # Snapshot state under the lock, then release before any
-            # cross-plugin RPC (``plugs.call``) or second-swipe handler.
-            # Holding ``self.lock`` across ``plugs.call`` blocks every
-            # status RPC into this plugin for the duration of the call,
-            # which can deadlock the UI if the cross-plugin call recurses
-            # back into the podcast player.
+            # Second tap detection - extracted to ``playback_state.
+            # decide_second_swipe`` so the decision matrix is testable
+            # in isolation. We still snapshot under the lock + release
+            # before the cross-plugin status RPC (Phase 1 fix #4 lock
+            # discipline; see ``decide_second_swipe`` docstring).
             with self.lock:
-                is_same_podcast = (
-                    self.playback_active and self.current_feed_url == feed_url
-                )
-            if is_same_podcast:
+                snap_active = self.playback_active
+                snap_feed_url = self.current_feed_url
+            # Only fetch MPD state if the snapshot suggests a possible
+            # second swipe - otherwise we waste a wire round-trip.
+            mpd_state = None
+            if snap_active and snap_feed_url == feed_url:
                 mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
                 mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
-                if mpd_state != 'stop':
-                    logger.info("Second tap detected, calling second_swipe_action")
-                    self.second_swipe_action()
-                    return
-                else:
-                    logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
-                    with self.lock:
-                        self.playback_active = False
+            decision = decide_second_swipe(
+                playback_active=snap_active,
+                current_feed_url=snap_feed_url,
+                incoming_feed_url=feed_url,
+                mpd_state=mpd_state,
+            )
+            if decision is SecondSwipeDecision.INVOKE_HANDLER:
+                logger.info("Second tap detected, calling second_swipe_action")
+                self.second_swipe_action()
+                return
+            if decision is SecondSwipeDecision.CLEAR_STALE_AND_RESTART:
+                logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                with self.lock:
+                    self.playback_active = False
+            # FRESH_START falls through to feed fetch + playback below.
 
             # Fetch feed
             feed_data = self.feed_manager.fetch_feed(feed_url)
@@ -610,9 +671,6 @@ class PlayerPodcast:
                 })
                 raise ValueError(error_msg)
 
-            podcast_id = feed_data['podcast_id']
-            episodes = feed_data['episodes']
-
             # Store podcast metadata for status display
             self.current_podcast_metadata = {
                 'title': feed_data.get('title', 'Unknown Podcast'),
@@ -620,51 +678,41 @@ class PlayerPodcast:
                 'image_url': feed_data.get('image_url', '')
             }
 
-            if not episodes:
-                logger.warning("No episodes found in feed")
-                return
-
-            # Add/update podcast subscription
-            self.state_manager.add_podcast(
-                podcast_id,
-                feed_url,
-                feed_data['title']
+            # Build the play plan (queue + resume) via the pure seam.
+            # build_queue_plan returns None if the feed is empty or the
+            # filter pipeline yields no playable episodes.
+            plan = build_queue_plan(
+                feed_data=feed_data,
+                queue_manager=self.queue_manager,
+                state_manager=self.state_manager,
             )
-
-            # Generate playable queue (auto-reset if all completed)
-            playable_episodes, was_reset = self.queue_manager.get_playable_queue(
-                episodes,
-                podcast_id
-            )
-
-            if not playable_episodes:
+            if plan is None:
                 logger.warning("No playable episodes")
                 return
 
-            # Check for resume
-            logger.debug(f"Checking for resume: "
-                          f"playable_episodes={len(playable_episodes)}, was_reset={was_reset}")
-            resume_info = self.queue_manager.find_resume_episode(playable_episodes)
-            logger.debug(f"resume_info={resume_info}")
-            start_index = 0
-            resume_position = 0
+            # Add/update podcast subscription now that we know we have
+            # something to play (avoids polluting state on empty feeds).
+            self.state_manager.add_podcast(
+                plan.podcast_id,
+                feed_url,
+                feed_data['title'],
+            )
 
-            if resume_info and not was_reset:
-                resume_episode, resume_index = resume_info
-                start_index = resume_index
-                resume_position = self.state_manager.get_resume_position(resume_episode['guid'])
-                logger.info(f"Found resume: episode_index={resume_index}, resume_position={resume_position}")
-                logger.info(f"Resuming from episode {resume_index + 1}/{len(playable_episodes)} "
-                           f"at {resume_position}s")
-            else:
-                logger.debug(f"No resume: resume_info={resume_info}, was_reset={was_reset}")
+            if plan.resume_position > 0:
+                logger.info(
+                    f"Resuming from episode {plan.start_index + 1}/"
+                    f"{len(plan.playable_episodes)} at {plan.resume_position}s"
+                )
 
-            # Play via MPD - start with the first (or resume) episode
-            episode_to_play = playable_episodes[start_index]
+            episode_to_play = plan.episode_to_play
+            podcast_id = plan.podcast_id
+            playable_episodes = plan.playable_episodes
+            start_index = plan.start_index
+            resume_position = plan.resume_position
+            episode_guid = episode_to_play['guid']
             logger.info(f"Playing episode at index {start_index}: {episode_to_play.get('title', 'Unknown')}")
 
             # Resolve playback URL (cached local file or CDN stream)
-            episode_guid = episode_to_play['guid']
             playback_url = self._resolve_playback_url(episode_to_play, resume_position)
 
             # Phase 2: claim the active-player slot before driving
@@ -677,7 +725,7 @@ class PlayerPodcast:
             # value on success). Lock is reacquired below for state
             # mutations only.
             logger.info(f"Calling MPD play_single: {playback_url}")
-            plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+            plugs.call('player', 'ctrl', 'play_single_passive', args=(playback_url,))
             logger.info("MPD play_single succeeded")
 
             # TODO: Implement playlist queuing for multiple episodes
@@ -744,30 +792,38 @@ class PlayerPodcast:
         try:
             logger.info(f"Playing specific episode: {episode_guid}")
 
-            # Second tap detection: if the same episode is actually playing,
-            # delegate to the configured second_swipe_action (default: toggle).
-            # Must verify MPD state to avoid stale playback_active flag.
-            #
-            # Snapshot the second-swipe condition under the lock, then
-            # release before calling out to ``plugs.call`` or the second-
-            # swipe handler. See ``play_podcast_series`` for the rationale.
+            # Second tap detection via the shared ``decide_second_swipe``
+            # seam, matching on (feed_url, episode_guid). See
+            # ``play_podcast_series`` for the rationale on the snapshot-
+            # release-call pattern.
             with self.lock:
-                is_same_episode = (
-                    self.playback_active
-                    and self.current_feed_url == feed_url
-                    and self.current_episode_guid == episode_guid
-                )
-            if is_same_episode:
+                snap_active = self.playback_active
+                snap_feed_url = self.current_feed_url
+                snap_guid = self.current_episode_guid
+            mpd_state = None
+            if (
+                snap_active
+                and snap_feed_url == feed_url
+                and snap_guid == episode_guid
+            ):
                 mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
                 mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
-                if mpd_state != 'stop':
-                    logger.info("Second tap detected, calling second_swipe_action")
-                    self.second_swipe_action()
-                    return
-                else:
-                    logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
-                    with self.lock:
-                        self.playback_active = False
+            decision = decide_second_swipe(
+                playback_active=snap_active,
+                current_feed_url=snap_feed_url,
+                incoming_feed_url=feed_url,
+                mpd_state=mpd_state,
+                current_episode_guid=snap_guid,
+                incoming_episode_guid=episode_guid,
+            )
+            if decision is SecondSwipeDecision.INVOKE_HANDLER:
+                logger.info("Second tap detected, calling second_swipe_action")
+                self.second_swipe_action()
+                return
+            if decision is SecondSwipeDecision.CLEAR_STALE_AND_RESTART:
+                logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                with self.lock:
+                    self.playback_active = False
 
             # Fetch feed
             feed_data = self.feed_manager.fetch_feed(feed_url)
@@ -813,7 +869,7 @@ class PlayerPodcast:
 
             # Phase 1 follow-up #2: cross-plugin call runs WITHOUT
             # ``self.lock``. Lock reacquired below for state mutations.
-            plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+            plugs.call('player', 'ctrl', 'play_single_passive', args=(playback_url,))
 
             with self.lock:
                 # Update state
@@ -960,33 +1016,46 @@ class PlayerPodcast:
     @plugs.tag
     def pause(self, state: int = 1):
         """
-        Pause or resume playback
+        Pause or resume playback. Re-pins podcast as active (Phase 2
+        FU#2) so ``coordinator.current()`` stays consistent.
 
         Args:
             state: 1 to pause, 0 to resume
         """
         try:
+            self._activate_podcast()
             plugs.call('player', 'ctrl', 'pause', args=(state,))
         except Exception as e:
             logger.error(f"Pause failed: {e}")
 
     @plugs.tag
     def play(self):
-        """Resume playback"""
+        """Resume playback.
+
+        Uses MPD's passive ``pause(0)`` rather than ``play()`` because
+        MPD's ``play`` is an activation event (calls ``_activate_mpd``)
+        which would yank coordinator state away from podcast. Phase 2
+        FU#2 decision: keep podcast pinned for the whole episode."""
         try:
-            plugs.call('player', 'ctrl', 'play')
+            self._activate_podcast()
+            plugs.call('player', 'ctrl', 'pause', args=(0,))
         except Exception as e:
             logger.error(f"Play failed: {e}")
 
     @plugs.tag
     def next(self):
-        """Skip to next episode"""
+        """Skip to next episode. ``_next_episode`` itself uses
+        ``play_single_passive`` via ``_play_episode_from_queue``;
+        re-pinning here is defensive against drift."""
+        self._activate_podcast()
         self._next_episode()
 
     @plugs.tag
     def prev(self):
-        """Skip to previous episode in the podcast feed"""
+        """Skip to previous episode in the podcast feed. Re-pins
+        podcast as active (Phase 2 FU#2)."""
         try:
+            self._activate_podcast()
             with self.lock:
                 current_guid = self.current_episode_guid
             if not current_guid:

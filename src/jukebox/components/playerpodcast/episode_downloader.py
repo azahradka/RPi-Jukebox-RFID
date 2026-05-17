@@ -58,7 +58,7 @@ class EpisodeDownloadManager:
         self._cleanup_orphaned_files()
 
         logger.info(f"Episode cache initialized: {len(self.metadata.get('episodes', {}))} episodes, "
-                    f"{self.metadata.get('total_size_bytes', 0) / (1024*1024):.1f} MB / "
+                    f"{self.metadata.get('total_size_bytes', 0) / (1024 * 1024):.1f} MB / "
                     f"{max_cache_size_mb} MB")
 
     def _load_metadata(self) -> Dict[str, Any]:
@@ -236,8 +236,8 @@ class EpisodeDownloadManager:
         # Check free disk space
         free_space = self._get_free_disk_space()
         if free_space < self.min_free_space_bytes:
-            raise Exception(f"Insufficient disk space: {free_space / (1024*1024):.1f} MB free, "
-                          f"need {self.min_free_space_bytes / (1024*1024):.1f} MB minimum")
+            raise Exception(f"Insufficient disk space: {free_space / (1024 * 1024):.1f} MB free, "
+                          f"need {self.min_free_space_bytes / (1024 * 1024):.1f} MB minimum")
 
         logger.info(f"Downloading episode: {episode_url}")
 
@@ -258,14 +258,14 @@ class EpisodeDownloadManager:
 
             # Get total size
             total_size = int(response.headers.get('content-length', 0))
-            logger.info(f"Download size: {total_size / (1024*1024):.1f} MB")
+            logger.info(f"Download size: {total_size / (1024 * 1024):.1f} MB")
 
             # Check if we need to evict episodes
             if total_size > 0:
                 available_space = self.max_cache_size_bytes - self.metadata.get('total_size_bytes', 0)
                 if total_size > available_space:
                     bytes_needed = total_size - available_space
-                    logger.info(f"Cache full, need to free {bytes_needed / (1024*1024):.1f} MB")
+                    logger.info(f"Cache full, need to free {bytes_needed / (1024 * 1024):.1f} MB")
                     self._evict_oldest_episodes(bytes_needed)
 
             # Download with progress tracking
@@ -315,7 +315,7 @@ class EpisodeDownloadManager:
             self.metadata['total_size_bytes'] = self.metadata.get('total_size_bytes', 0) + file_size
             self.save_metadata()
 
-            logger.info(f"Downloaded episode to {final_filename} ({file_size / (1024*1024):.1f} MB)")
+            logger.info(f"Downloaded episode to {final_filename} ({file_size / (1024 * 1024):.1f} MB)")
             return final_file_path.resolve()
 
         except requests.exceptions.Timeout:
@@ -365,7 +365,7 @@ class EpisodeDownloadManager:
                 if file_path.exists():
                     file_path.unlink()
                     logger.info(f"Evicted episode: {ep_data.get('episode_title', ep_hash)} "
-                              f"({ep_data['file_size_bytes'] / (1024*1024):.1f} MB)")
+                              f"({ep_data['file_size_bytes'] / (1024 * 1024):.1f} MB)")
 
                 bytes_freed += ep_data['file_size_bytes']
                 self.metadata['total_size_bytes'] -= ep_data['file_size_bytes']
@@ -374,7 +374,7 @@ class EpisodeDownloadManager:
                 logger.warning(f"Failed to evict episode {ep_hash}: {e}")
 
         self.save_metadata()
-        logger.info(f"Evicted episodes, freed {bytes_freed / (1024*1024):.1f} MB")
+        logger.info(f"Evicted episodes, freed {bytes_freed / (1024 * 1024):.1f} MB")
 
     def evict_episode(self, episode_guid: str):
         """

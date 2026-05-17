@@ -107,17 +107,25 @@ def test_cache_expiry(feed_manager, temp_cache_dir):
     assert cached_data is None
 
 
-@pytest.mark.skip(
-    reason="Pre-existing test bug exposed by Phase 0b CI broadening: test only "
-    "mocks feedparser.parse but production fetch_feed() now calls requests.get() "
-    "first, which makes a real network call and returns 404. Tracked for Phase 3b "
-    "(playerpodcast cleanup + tests). See ~/.claude/plans/this-project-is-vaguely-"
-    "wobbly-abelson.md."
-)
 @patch('components.playerpodcast.feed_manager.feedparser.parse')
-def test_fetch_feed_success(mock_parse, feed_manager):
-    """Test successful feed fetch and parse"""
-    # Mock feedparser response
+@patch('components.playerpodcast.feed_manager.requests.get')
+def test_fetch_feed_success(mock_get, mock_parse, feed_manager):
+    """Test successful feed fetch and parse.
+
+    Phase 0b loose-end #2: production ``fetch_feed`` calls
+    ``requests.get(feed_url)`` first to fetch the raw bytes, then
+    hands them to ``feedparser.parse``. The original test only mocked
+    ``feedparser.parse`` and let the real ``requests.get`` hit the
+    network (returning 404 for example.com/feed.xml in CI), so the
+    test had been skipped. Both calls must be mocked.
+    """
+    # Mock the HTTP fetch (production path 1: requests.get).
+    mock_response = Mock()
+    mock_response.content = b'<rss><channel><title>Test Podcast</title></channel></rss>'
+    mock_response.raise_for_status = Mock()
+    mock_get.return_value = mock_response
+
+    # Mock feedparser's parse of the fetched bytes (production path 2).
     mock_feed = MagicMock()
     mock_feed.bozo = False
     mock_feed.feed = {
@@ -137,6 +145,12 @@ def test_fetch_feed_success(mock_parse, feed_manager):
 
     feed_url = "https://example.com/feed.xml"
     result = feed_manager.fetch_feed(feed_url)
+
+    # requests.get was called with the feed URL.
+    mock_get.assert_called_once()
+    assert mock_get.call_args[0][0] == feed_url
+    # feedparser.parse was handed the bytes from the HTTP response.
+    mock_parse.assert_called_once_with(mock_response.content)
 
     assert result is not None
     assert result['title'] == 'Test Podcast'

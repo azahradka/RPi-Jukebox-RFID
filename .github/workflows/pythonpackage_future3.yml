@@ -68,15 +68,15 @@ jobs:
     - name: Run pytest with coverage
       env:
         # Coverage floor: hardening roadmap Phase 0b establishes the gate;
-        # Phase 1 ratcheted to 42% (measured ~43%); Phase 3a ratchets to
-        # 43% (measured ~45% on Python 3.11 after MPDStateStore +
-        # MPDClientWrapper + play_card / second-swipe tests; ~2% headroom).
-        # Phase 3c ratchets to 45% (measured ~47% on Python 3.11 after
-        # the playerspotify swipe-decision seam, status_publisher_loop
-        # split, content_resolver show-URI fix, and toggle-RLock
-        # regression coverage; ~2% headroom).
+        # Phase 1 ratcheted to 42% (measured ~43%); Phase 3a ratcheted to
+        # 43% (measured ~45%); Phase 3c ratcheted to 45% (measured ~47%
+        # after playerspotify cleanup); Phase 3b ratchets to 50%
+        # (measured ~52% on Python 3.11 after PodcastPlaybackState
+        # seam, real-exercise lock-release tests, coordinator-pinning
+        # tests, and the coordinator double-invoke regression test;
+        # ~2% headroom).
         # Subsequent phases ratchet up as they add tests.
-        COVERAGE_FAIL_UNDER: '45'
+        COVERAGE_FAIL_UNDER: '50'
       run: |
         ./run_pytest.sh --cov --cov-report xml --cov-config=.coveragerc --cov-fail-under=${COVERAGE_FAIL_UNDER}
     - name: Report to Coveralls (parallel)

@@ -1,165 +1,307 @@
 # -*- coding: utf-8 -*-
-"""Regression test for Phase 1 follow-up #2: podcast must not hold
-``self.lock`` across ANY ``plugs.call`` site.
+"""Behavioural regression tests for Phase 2's podcast lock-release sweep.
 
-Phase 1, fix #4 fixed the second-swipe ``plugs.call('player','ctrl',
-'playerstatus')`` path; Phase 2 extends that discipline to the other
-cross-plugin call sites that previously held the lock:
+Phase 2 extended the Phase 1 lock-discipline ("snapshot under
+self.lock, release, then call out across plugs") to every
+``plugs.call`` site in the podcast player:
 
-* ``play_podcast_series`` / ``play_podcast_episode`` — MPD play_single
-* ``_play_episode_from_queue`` — MPD play_single (next/prev navigation)
-* ``stop()`` — MPD stop
-* ``exit()`` — MPD playerstatus (final position save)
+* ``play_podcast_series`` / ``play_podcast_episode`` - MPD play_single
+* ``_play_episode_from_queue`` - MPD play_single (next/prev navigation)
+* ``stop()`` - MPD stop
+* ``exit()`` - MPD playerstatus (final position save)
 
-The bug is "lock held across plugs.call". The fix is "snapshot under
-the lock, release, call out". We pin this at the source level (so the
-test is robust to refactors of the surrounding logic) AND with a
-behavioural test that imitates the new lock discipline.
+The original test file (also from Phase 2) used 5 source-text greps
+and 1 behavioural test against a fresh ``threading.RLock`` rather
+than ``PlayerPodcast``. Phase 3b owns the cleanup (Phase 2 FU#4).
+
+Each test below drives the real ``PlayerPodcast`` method via a mocked
+``plugs`` module that probes ``self.lock`` from a worker thread at
+the moment of the cross-plugin call. The probe acquires
+non-blockingly: success means the calling thread released the lock,
+failure means it didn't.
+
+Reversion check: re-introducing ``with self.lock:`` around any
+covered plugs.call site causes the corresponding probe to return
+False - test fails.
 """
 
-import re
 import threading
-import time
-from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
-SOURCE = (
-    Path(__file__).resolve().parents[3]
-    / 'src' / 'jukebox' / 'components' / 'playerpodcast' / '__init__.py'
-)
+# Do NOT pre-mock ``requests`` / ``feedparser`` at module level - both
+# are installed in the venv, and a module-level MagicMock for
+# ``requests`` pollutes sys.modules for later-collected test files
+# (playerspotify). Conftest handles ``components.player`` stubbing.
+
+from components.playerpodcast import PlayerPodcast  # noqa: E402
 
 
-def _read_source():
-    return SOURCE.read_text()
+@pytest.fixture
+def podcast_player():
+    """Minimal PlayerPodcast for lock-release tests.
+
+    Bypasses ``__init__`` (filesystem + cfg setup) and assigns only
+    the attributes the four code paths under test touch.
+    """
+    p = PlayerPodcast.__new__(PlayerPodcast)
+    p.lock = threading.RLock()
+    p.feed_manager = MagicMock()
+    p.queue_manager = MagicMock()
+    p.state_manager = MagicMock()
+    p.episode_downloader = None
+    p.mpd_podcast_subdir = 'podcast-cache'
+    # Background thread bookkeeping (used by exit()).
+    p.position_thread = MagicMock()
+    p.position_thread.is_alive.return_value = False
+    p.position_thread_stop = threading.Event()
+    # Fresh, idle-ish state.
+    p.current_podcast_id = None
+    p.current_episode_guid = None
+    p.current_feed_url = None
+    p.playback_active = False
+    p.current_episode_metadata = None
+    p.current_podcast_metadata = None
+    p.second_swipe_action = MagicMock()
+    return p
 
 
-def _find_method(src, name):
-    """Return source body of the named method or top-level def."""
-    pattern = re.compile(rf'^(    )?def {re.escape(name)}\(', re.MULTILINE)
-    m = pattern.search(src)
-    assert m, f"method {name} not found"
-    start = m.start()
-    # Find end: next def at same indent level.
-    indent = m.group(1) or ''
-    end_re = re.compile(rf'^{indent}(?:def |@|class )', re.MULTILINE)
-    end_m = end_re.search(src, m.end())
-    return src[start:(end_m.start() if end_m else len(src))]
+def _probing_plugs_call(podcast_player, target_args, probe_results):
+    """Build a fake ``plugs.call`` that probes the lock when called
+    with ``target_args`` and records whether the probe succeeded."""
+    def fake_call(*args, **kwargs):
+        if args == target_args:
+            probe = []
 
+            def worker():
+                acquired = podcast_player.lock.acquire(blocking=False)
+                probe.append(acquired)
+                if acquired:
+                    podcast_player.lock.release()
 
-def test_play_episode_from_queue_releases_lock_before_plugs_call():
-    """The internal next/prev helper used to hold ``self.lock`` across
-    ``plugs.call('player','ctrl','play_single', ...)``. After Phase 2
-    the cross-plugin call must run OUTSIDE the lock."""
-    body = _find_method(_read_source(), '_play_episode_from_queue')
-    # Locate the plugs.call line and confirm it is NOT preceded by
-    # an open ``with self.lock:`` block that has yet to close.
-    play_single_idx = body.find("plugs.call('player', 'ctrl', 'play_single'")
-    assert play_single_idx > 0, "play_single plugs.call not found"
-    preamble = body[:play_single_idx]
-    # The fix removes the with-lock wrapping. So the plugs.call line
-    # must NOT be indented more than one level inside the method body.
-    # Easier sanity check: between the last `with self.lock:` and the
-    # plugs.call there must be a closing dedent (i.e. another
-    # statement at method-body indent before the call).
-    assert 'with self.lock:\n            plugs.call' not in preamble + body, \
-        "play_single still inside a with self.lock block"
-
-
-def test_play_podcast_series_releases_lock_around_play_single():
-    body = _find_method(_read_source(), 'play_podcast_series')
-    assert 'plugs.call(' in body
-    # The pattern "with self.lock: ... plugs.call('player', 'ctrl', 'play_single'..."
-    # (without an intervening dedent) is the bug; assert it's gone.
-    assert "with self.lock:\n                # Use MPD's play_single" not in body
-    assert "with self.lock:\n                logger.info(f\"Calling MPD play_single" not in body
-
-
-def test_play_podcast_episode_releases_lock_around_play_single():
-    body = _find_method(_read_source(), 'play_podcast_episode')
-    assert 'plugs.call(' in body
-    assert "with self.lock:\n                # Use playermpd's play_single" not in body
-    assert "with self.lock:\n                plugs.call('player', 'ctrl', 'play_single'" not in body
-
-
-def test_stop_releases_lock_before_plugs_call():
-    body = _find_method(_read_source(), 'stop')
-    # plugs.call('player','ctrl','stop') must appear BEFORE the
-    # ``with self.lock:`` that does state mutations.
-    stop_call_idx = body.find("plugs.call('player', 'ctrl', 'stop')")
-    lock_idx = body.find('with self.lock:')
-    assert stop_call_idx > 0, 'plugs.call(stop) not found'
-    assert lock_idx > 0, 'with self.lock: not found in stop()'
-    assert stop_call_idx < lock_idx, \
-        "stop() still holds the lock across plugs.call"
-
-
-def test_exit_releases_lock_around_final_position_save():
-    body = _find_method(_read_source(), 'exit')
-    # The old pattern had ``with self.lock: ... plugs.call('player',
-    # 'ctrl','playerstatus')`` inside. The new pattern snapshots
-    # under the lock, releases, then calls plugs.call.
-    if "plugs.call('player', 'ctrl', 'playerstatus')" in body:
-        # Find the call and ensure it's not indented inside `with self.lock:`.
-        snapshot_idx = body.find("with self.lock:")
-        call_idx = body.find("plugs.call('player', 'ctrl', 'playerstatus')")
-        # New pattern: snapshot must come before the plugs.call.
-        assert snapshot_idx >= 0
-        assert call_idx > snapshot_idx
-        # And there should be a dedented statement (e.g. `if should_save:`)
-        # between them, showing the with-block was closed.
-        between = body[snapshot_idx:call_idx]
-        # 8-space indent = method body level; 12+ = inside a with.
-        # We expect at least one line dedented to method-body indent
-        # before the call.
-        method_body_lines = [
-            ln for ln in between.splitlines()
-            if ln.startswith('        ') and not ln.startswith('         ')
-        ]
-        assert method_body_lines, \
-            "exit() still holds the lock across plugs.call(playerstatus)"
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join(timeout=1.0)
+            probe_results.append(bool(probe) and probe[0])
+        # All other cross-plugin calls return a benign default.
+        if args[-1:] == ('playerstatus',):
+            return {'state': 'play', 'elapsed': '5', 'duration': '100'}
+        return {}
+    return fake_call
 
 
 # ---------------------------------------------------------------------------
-# Behavioural counterpart: model the new pattern and prove it does not
-# block parallel readers. Mirrors test_second_swipe_lock_release.py.
+# play_podcast_series - play_single must NOT hold self.lock
 # ---------------------------------------------------------------------------
-def test_new_pattern_does_not_block_concurrent_readers():
-    """The new pattern: snapshot under lock, release, call out, then
-    reacquire for mutations. A slow plugs.call must not stall a
-    concurrent reader."""
-    lock = threading.RLock()
-    state = {'playback_active': True, 'current_episode_guid': 'g1'}
+def test_play_podcast_series_releases_lock_around_play_single(podcast_player):
+    """Drive ``play_podcast_series`` happy path and assert ``self.lock``
+    is free at the moment of ``plugs.call('player','ctrl','play_single',
+    ...)``.
 
-    plugs_started = threading.Event()
-    plugs_done = threading.Event()
+    Reversion check: wrap the play_single call in ``with self.lock:``
+    in production and the probe returns False - test fails.
+    """
+    # Feed manager returns a one-episode feed.
+    podcast_player.feed_manager.fetch_feed.return_value = {
+        'podcast_id': 'pod1',
+        'title': 'P', 'author': '', 'image_url': '',
+        'episodes': [{'guid': 'ep1', 'title': 'E', 'url': 'http://ep1'}],
+    }
+    podcast_player.queue_manager.get_playable_queue.return_value = (
+        [{'guid': 'ep1', 'title': 'E', 'url': 'http://ep1'}], False,
+    )
+    podcast_player.queue_manager.find_resume_episode.return_value = None
+    podcast_player.state_manager.get_resume_position.return_value = 0
 
-    def slow_plugs_call():
-        plugs_started.set()
-        time.sleep(0.4)
-        plugs_done.set()
+    probe_results = []
+    with patch('components.playerpodcast.plugs') as mock_plugs:
+        mock_plugs.call = _probing_plugs_call(
+            podcast_player,
+            ('player', 'ctrl', 'play_single_passive'),
+            probe_results,
+        )
+        # _activate_podcast goes through coordinator (mocked at module
+        # import) - we don't probe it here, just let it pass.
+        with patch.object(podcast_player, '_activate_podcast'):
+            podcast_player.play_podcast_series('http://feed/a')
 
-    def play_episode_from_queue_new_pattern():
-        # New pattern: prep done outside the lock, plugs.call outside
-        # the lock, then a tiny critical section for state mutations.
-        slow_plugs_call()
-        with lock:
-            state['current_episode_guid'] = 'g2'
+    assert probe_results, "play_single RPC was never invoked"
+    assert all(probe_results), (
+        "self.lock was held across plugs.call(play_single) in "
+        "play_podcast_series - Phase 2 lock-release regression"
+    )
 
-    def status_reader():
-        with lock:
-            return dict(state)
 
-    worker = threading.Thread(target=play_episode_from_queue_new_pattern)
-    worker.start()
+# ---------------------------------------------------------------------------
+# play_podcast_episode - play_single must NOT hold self.lock
+# ---------------------------------------------------------------------------
+def test_play_podcast_episode_releases_lock_around_play_single(podcast_player):
+    """Same invariant as ``test_play_podcast_series_...`` but for the
+    specific-episode entry point."""
+    podcast_player.feed_manager.fetch_feed.return_value = {
+        'podcast_id': 'pod1',
+        'title': 'P', 'author': '', 'image_url': '',
+        'episodes': [{'guid': 'ep1', 'title': 'E', 'url': 'http://ep1'}],
+    }
+    podcast_player.queue_manager.get_episode_by_guid.return_value = {
+        'guid': 'ep1', 'title': 'E', 'url': 'http://ep1',
+    }
+    podcast_player.state_manager.get_resume_position.return_value = 0
 
-    assert plugs_started.wait(timeout=1.0)
-    # Read while plugs_call is still "running" — must NOT block.
-    t0 = time.monotonic()
-    snap = status_reader()
-    elapsed = time.monotonic() - t0
-    # Read should be effectively instant (lock free during plugs.call).
-    assert elapsed < 0.1, f"reader blocked for {elapsed:.2f}s (lock held across plugs.call)"
-    assert snap['current_episode_guid'] == 'g1'
+    probe_results = []
+    with patch('components.playerpodcast.plugs') as mock_plugs:
+        mock_plugs.call = _probing_plugs_call(
+            podcast_player,
+            ('player', 'ctrl', 'play_single_passive'),
+            probe_results,
+        )
+        with patch.object(podcast_player, '_activate_podcast'):
+            podcast_player.play_podcast_episode('http://feed/a', 'ep1')
 
-    worker.join(timeout=2.0)
-    assert plugs_done.is_set()
+    assert probe_results, "play_single RPC was never invoked"
+    assert all(probe_results), (
+        "self.lock was held across plugs.call(play_single) in "
+        "play_podcast_episode - Phase 2 lock-release regression"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _play_episode_from_queue - next/prev navigation path
+# ---------------------------------------------------------------------------
+def test_play_episode_from_queue_releases_lock_around_play_single(podcast_player):
+    """``_play_episode_from_queue`` is the shared next/prev helper.
+    It must release ``self.lock`` around ``plugs.call(play_single)``
+    too - Phase 2 fixed this one alongside the entry-point methods."""
+    episode = {'guid': 'ep2', 'title': 'E2', 'url': 'http://ep2'}
+
+    probe_results = []
+    with patch('components.playerpodcast.plugs') as mock_plugs:
+        mock_plugs.call = _probing_plugs_call(
+            podcast_player,
+            ('player', 'ctrl', 'play_single_passive'),
+            probe_results,
+        )
+        podcast_player._play_episode_from_queue(episode)
+
+    assert probe_results, "play_single RPC was never invoked"
+    assert all(probe_results), (
+        "self.lock was held across plugs.call(play_single) in "
+        "_play_episode_from_queue - Phase 2 lock-release regression"
+    )
+
+
+# ---------------------------------------------------------------------------
+# stop() - plugs.call(stop) must NOT hold self.lock
+# ---------------------------------------------------------------------------
+def test_stop_releases_lock_around_plugs_call(podcast_player):
+    """``stop()`` calls ``plugs.call('player','ctrl','stop')`` and then
+    mutates state under the lock. The stop call must run with the
+    lock free."""
+    podcast_player.playback_active = True
+
+    probe_results = []
+    with patch('components.playerpodcast.plugs') as mock_plugs:
+        mock_plugs.call = _probing_plugs_call(
+            podcast_player,
+            ('player', 'ctrl', 'stop'),
+            probe_results,
+        )
+        podcast_player.stop()
+
+    assert probe_results, "stop RPC was never invoked"
+    assert all(probe_results), (
+        "self.lock was held across plugs.call(stop) in stop() - "
+        "Phase 2 lock-release regression"
+    )
+    # And the state mutation happened (post-call critical section).
+    assert podcast_player.playback_active is False
+
+
+# ---------------------------------------------------------------------------
+# exit() - final position save (playerstatus) must NOT hold self.lock
+# ---------------------------------------------------------------------------
+def test_exit_releases_lock_around_final_playerstatus(podcast_player):
+    """``exit()`` snapshots state under the lock, releases it, then
+    calls ``plugs.call('player','ctrl','playerstatus')`` for the final
+    position save. The playerstatus call must run with the lock free.
+    """
+    # Force the "should_save" branch.
+    podcast_player.playback_active = True
+    podcast_player.current_episode_guid = 'ep1'
+    podcast_player.episode_downloader = None  # skip save_metadata path
+
+    probe_results = []
+    with patch('components.playerpodcast.plugs') as mock_plugs:
+        mock_plugs.call = _probing_plugs_call(
+            podcast_player,
+            ('player', 'ctrl', 'playerstatus'),
+            probe_results,
+        )
+        podcast_player.exit()
+
+    assert probe_results, "playerstatus RPC was never invoked in exit()"
+    assert all(probe_results), (
+        "self.lock was held across plugs.call(playerstatus) in exit() "
+        "- Phase 2 lock-release regression"
+    )
+    # And state_manager.update_episode_position was driven with the
+    # snapshotted guid.
+    podcast_player.state_manager.update_episode_position.assert_called_once()
+    call_args = podcast_player.state_manager.update_episode_position.call_args[0]
+    assert call_args[0] == 'ep1'
+
+
+# ---------------------------------------------------------------------------
+# Concurrent-reader: real podcast object must not block parallel readers
+# ---------------------------------------------------------------------------
+def test_concurrent_status_read_does_not_block_during_play_single(podcast_player):
+    """While ``play_podcast_series`` is in its ``plugs.call(play_single)``
+    window, another thread can acquire and release ``self.lock`` (as
+    the status RPC does) without blocking. This is the test that
+    pre-Phase-2 would have hung."""
+    podcast_player.feed_manager.fetch_feed.return_value = {
+        'podcast_id': 'pod1',
+        'title': 'P', 'author': '', 'image_url': '',
+        'episodes': [{'guid': 'ep1', 'title': 'E', 'url': 'http://ep1'}],
+    }
+    podcast_player.queue_manager.get_playable_queue.return_value = (
+        [{'guid': 'ep1', 'title': 'E', 'url': 'http://ep1'}], False,
+    )
+    podcast_player.queue_manager.find_resume_episode.return_value = None
+    podcast_player.state_manager.get_resume_position.return_value = 0
+
+    in_play_single = threading.Event()
+    finished_probe = threading.Event()
+
+    def slow_play_single_call(*args, **kwargs):
+        if args == ('player', 'ctrl', 'play_single_passive'):
+            in_play_single.set()
+            # Wait until the reader thread has had a chance to probe.
+            finished_probe.wait(timeout=1.0)
+            return None
+        return {}
+
+    reader_acquired = []
+
+    def reader():
+        in_play_single.wait(timeout=1.0)
+        acquired = podcast_player.lock.acquire(blocking=False)
+        reader_acquired.append(acquired)
+        if acquired:
+            podcast_player.lock.release()
+        finished_probe.set()
+
+    with patch('components.playerpodcast.plugs') as mock_plugs:
+        mock_plugs.call = slow_play_single_call
+        with patch.object(podcast_player, '_activate_podcast'):
+            reader_thread = threading.Thread(target=reader)
+            reader_thread.start()
+            podcast_player.play_podcast_series('http://feed/a')
+            reader_thread.join(timeout=2.0)
+
+    assert reader_acquired and reader_acquired[0], (
+        "Concurrent reader could not acquire self.lock during "
+        "play_single - lock-release invariant violated"
+    )

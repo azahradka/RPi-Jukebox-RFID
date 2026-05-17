@@ -631,6 +631,31 @@ class PlayerMPD:
             self.mpd_client.play()
 
     @plugs.tag
+    def play_single_passive(self, song_url):
+        """Drive MPD wire to play a single URL without claiming activation.
+
+        Phase 2 FU#2 / Phase 3b: ``play_single`` calls ``_activate_mpd()``
+        which moves the coordinator's active backend to ``'mpd'``. That
+        is the right behaviour when MPD itself is the user-facing
+        backend, but **wrong** for the podcast player. Podcast plays
+        *through* MPD's wire but the user-facing backend is
+        ``'podcast'`` - so podcast pins itself as active via
+        ``_activate_podcast()`` before driving MPD here. Calling the
+        regular ``play_single`` from podcast would race the coordinator
+        back to ``'mpd'`` and make ``coordinator.current()`` lie to the
+        UI about which backend originated the playback.
+
+        Only ``playerpodcast`` is expected to use this. Future
+        cross-backend wrappers (e.g. a hypothetical playlist
+        aggregator) could use it too provided they own the coordinator
+        slot themselves.
+        """
+        with self.mpd_lock:
+            self.mpd_client.clear()
+            self.mpd_client.addid(song_url)
+            self.mpd_client.play()
+
+    @plugs.tag
     def resume(self):
         self._activate_mpd()
         with self.mpd_lock:
