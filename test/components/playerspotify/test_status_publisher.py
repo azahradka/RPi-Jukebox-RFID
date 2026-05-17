@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from spotipy.exceptions import SpotifyException
 
-from components.playerspotify import PlayerSpotify
+from components.playerspotify import BackoffPolicy, PlayerSpotify
 
 
 # ---------------------------------------------------------------------------
@@ -83,42 +83,65 @@ def test_publish_status_sends_when_spotify_is_active():
 # _handle_status_error_with_backoff: 429 vs generic
 # ---------------------------------------------------------------------------
 def test_handle_status_error_429_with_retry_after_honoured():
-    """HTTP 429 returns the server's Retry-After (≥30s)."""
+    """HTTP 429 returns the server's Retry-After (>=30s) with RETRY_AFTER policy."""
     p = _bare_player()
     exc = SpotifyException(429, -1, 'Too Many', headers={'Retry-After': '120'})
-    interval = p._handle_status_error_with_backoff(exc)
+    interval, policy = p._handle_status_error_with_backoff(exc)
     assert interval == 120
+    assert policy is BackoffPolicy.RETRY_AFTER
 
 
 def test_handle_status_error_429_floor_30s():
     """Retry-After below 30 is floored to 30 by _get_retry_after."""
     p = _bare_player()
     exc = SpotifyException(429, -1, 'Too Many', headers={'Retry-After': '5'})
-    interval = p._handle_status_error_with_backoff(exc)
+    interval, policy = p._handle_status_error_with_backoff(exc)
     assert interval == 30
+    assert policy is BackoffPolicy.RETRY_AFTER
+
+
+def test_handle_status_error_429_at_floor_returns_retry_after_policy():
+    """Phase 6 / Phase 3c FU#1 regression: Retry-After == _ERROR_BACKOFF_BASE
+    (exactly the floor) must still be tagged RETRY_AFTER, not generic.
+
+    Reversion check: if the typed policy is removed and the
+    magnitude-only heuristic returns, this test fails because the loop
+    multiplies 30 by the consecutive-error count.
+    """
+    p = _bare_player()
+    exc = SpotifyException(
+        429, -1, 'Too Many',
+        headers={'Retry-After': str(int(PlayerSpotify._ERROR_BACKOFF_BASE))},
+    )
+    interval, policy = p._handle_status_error_with_backoff(exc)
+    assert interval == PlayerSpotify._ERROR_BACKOFF_BASE
+    assert policy is BackoffPolicy.RETRY_AFTER
 
 
 def test_handle_status_error_429_missing_header_default_30s():
-    """No Retry-After header defaults to 30."""
+    """No Retry-After header defaults to 30 (RETRY_AFTER policy)."""
     p = _bare_player()
     exc = SpotifyException(429, -1, 'Too Many', headers={})
-    interval = p._handle_status_error_with_backoff(exc)
+    interval, policy = p._handle_status_error_with_backoff(exc)
     assert interval == 30
+    assert policy is BackoffPolicy.RETRY_AFTER
 
 
 def test_handle_status_error_generic_returns_base_backoff():
-    """Non-429 errors return the base; the loop applies the curve."""
+    """Non-429 errors return the base + EXPONENTIAL policy."""
     p = _bare_player()
     exc = SpotifyException(500, -1, 'Server error', headers={})
-    interval = p._handle_status_error_with_backoff(exc)
+    interval, policy = p._handle_status_error_with_backoff(exc)
     assert interval == PlayerSpotify._ERROR_BACKOFF_BASE
+    assert policy is BackoffPolicy.EXPONENTIAL
 
 
 def test_handle_status_error_non_spotify_exception_returns_base():
     """Any other exception type also falls into the generic branch."""
     p = _bare_player()
-    interval = p._handle_status_error_with_backoff(ConnectionError('boom'))
+    interval, policy = p._handle_status_error_with_backoff(ConnectionError('boom'))
     assert interval == PlayerSpotify._ERROR_BACKOFF_BASE
+    assert policy is BackoffPolicy.EXPONENTIAL
 
 
 # ---------------------------------------------------------------------------
@@ -127,30 +150,51 @@ def test_handle_status_error_non_spotify_exception_returns_base():
 def test_apply_error_backoff_first_error_returns_base():
     p = _bare_player()
     assert p._apply_error_backoff(
-        PlayerSpotify._ERROR_BACKOFF_BASE, consecutive_errors=1
+        PlayerSpotify._ERROR_BACKOFF_BASE, consecutive_errors=1,
+        policy=BackoffPolicy.EXPONENTIAL,
     ) == PlayerSpotify._ERROR_BACKOFF_BASE
 
 
 def test_apply_error_backoff_scales_with_consecutive_errors():
     p = _bare_player()
     assert p._apply_error_backoff(
-        PlayerSpotify._ERROR_BACKOFF_BASE, consecutive_errors=3
+        PlayerSpotify._ERROR_BACKOFF_BASE, consecutive_errors=3,
+        policy=BackoffPolicy.EXPONENTIAL,
     ) == 3 * PlayerSpotify._ERROR_BACKOFF_BASE
 
 
 def test_apply_error_backoff_caps_at_max():
     p = _bare_player()
     assert p._apply_error_backoff(
-        PlayerSpotify._ERROR_BACKOFF_BASE, consecutive_errors=100
+        PlayerSpotify._ERROR_BACKOFF_BASE, consecutive_errors=100,
+        policy=BackoffPolicy.EXPONENTIAL,
     ) == PlayerSpotify._ERROR_BACKOFF_MAX
 
 
-def test_apply_error_backoff_passes_through_429_retry_after():
-    """When base > _ERROR_BACKOFF_BASE (e.g. Retry-After=120) we
-    return the supplied value untouched, regardless of error count.
+def test_apply_error_backoff_passes_through_retry_after_policy():
+    """When policy=RETRY_AFTER, return base_interval untouched."""
+    p = _bare_player()
+    assert p._apply_error_backoff(
+        120, consecutive_errors=5, policy=BackoffPolicy.RETRY_AFTER,
+    ) == 120
+
+
+def test_apply_error_backoff_retry_after_at_floor_not_multiplied():
+    """Phase 6 / Phase 3c FU#1 regression: a 429 with
+    ``Retry-After: 30`` (exactly the error-base floor) must NOT be
+    multiplied by the consecutive-error count under the RETRY_AFTER
+    policy.
+
+    Reversion check: revert to the magnitude-only heuristic and this
+    test fails — 30 falls into the multiplication branch and a 5th
+    consecutive 429-at-floor sleeps 150 s rather than the
+    server-requested 30.
     """
     p = _bare_player()
-    assert p._apply_error_backoff(120, consecutive_errors=5) == 120
+    floor = PlayerSpotify._ERROR_BACKOFF_BASE
+    assert p._apply_error_backoff(
+        floor, consecutive_errors=5, policy=BackoffPolicy.RETRY_AFTER,
+    ) == floor
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +207,10 @@ def test_poll_status_once_returns_playing_interval_when_playing():
     p.player_status['state'] = 'playing'
     with patch.object(p, '_fetch_status'), \
          patch.object(p, '_publish_status'):
-        interval, ok = p._poll_status_once()
+        interval, ok, policy = p._poll_status_once()
     assert ok is True
     assert interval == PlayerSpotify._POLL_INTERVAL_PLAYING
+    assert policy is BackoffPolicy.EXPONENTIAL
 
 
 def test_poll_status_once_returns_idle_interval_when_paused():
@@ -174,7 +219,7 @@ def test_poll_status_once_returns_idle_interval_when_paused():
     p.player_status['state'] = 'paused'
     with patch.object(p, '_fetch_status'), \
          patch.object(p, '_publish_status'):
-        interval, ok = p._poll_status_once()
+        interval, ok, _policy = p._poll_status_once()
     assert ok is True
     assert interval == PlayerSpotify._POLL_INTERVAL_IDLE
 
@@ -185,7 +230,7 @@ def test_poll_status_once_returns_idle_interval_when_stopped():
     p.player_status['state'] = 'stopped'
     with patch.object(p, '_fetch_status'), \
          patch.object(p, '_publish_status'):
-        interval, ok = p._poll_status_once()
+        interval, ok, _policy = p._poll_status_once()
     assert ok is True
     assert interval == PlayerSpotify._POLL_INTERVAL_IDLE
 
@@ -195,22 +240,24 @@ def test_poll_status_once_no_client_returns_no_client_interval():
     p = _bare_player()
     p.sp_client = None
     with patch.object(p, '_publish_status') as mock_pub:
-        interval, ok = p._poll_status_once()
+        interval, ok, _policy = p._poll_status_once()
     assert ok is True
     assert interval == PlayerSpotify._POLL_INTERVAL_NO_CLIENT
     mock_pub.assert_called_once()
 
 
 def test_poll_status_once_on_429_returns_retry_after_and_not_success():
-    """429 path: interval is the server-supplied Retry-After, ok is False."""
+    """429 path: interval is the server-supplied Retry-After, ok is False,
+    policy is RETRY_AFTER."""
     p = _bare_player()
     p.sp_client = MagicMock()
     err = SpotifyException(429, -1, 'rl', headers={'Retry-After': '90'})
     with patch.object(p, '_fetch_status', side_effect=err), \
          patch.object(p, '_publish_status'):
-        interval, ok = p._poll_status_once()
+        interval, ok, policy = p._poll_status_once()
     assert ok is False
     assert interval == 90
+    assert policy is BackoffPolicy.RETRY_AFTER
 
 
 def test_poll_status_once_on_generic_error_returns_base_and_not_success():
@@ -219,9 +266,10 @@ def test_poll_status_once_on_generic_error_returns_base_and_not_success():
     err = SpotifyException(500, -1, 'oops', headers={})
     with patch.object(p, '_fetch_status', side_effect=err), \
          patch.object(p, '_publish_status'):
-        interval, ok = p._poll_status_once()
+        interval, ok, policy = p._poll_status_once()
     assert ok is False
     assert interval == PlayerSpotify._ERROR_BACKOFF_BASE
+    assert policy is BackoffPolicy.EXPONENTIAL
 
 
 def test_poll_status_once_publishes_cached_status_even_on_error():
@@ -259,11 +307,12 @@ def test_status_publisher_loop_resets_error_counter_on_success():
 
     # Sequence: error, error, success, error
     base = PlayerSpotify._ERROR_BACKOFF_BASE
+    exp = BackoffPolicy.EXPONENTIAL
     results = iter([
-        (base, False),   # err: backoff -> base * 1
-        (base, False),   # err: backoff -> base * 2
-        (1.0, True),     # success: 1s (playing)
-        (base, False),   # err: backoff -> base * 1 (counter was reset)
+        (base, False, exp),   # err: backoff -> base * 1
+        (base, False, exp),   # err: backoff -> base * 2
+        (1.0, True, exp),     # success: 1s (playing)
+        (base, False, exp),   # err: backoff -> base * 1 (counter was reset)
     ])
     with patch.object(p, '_poll_status_once', side_effect=lambda: next(results)):
         p._status_publisher_loop()
@@ -290,10 +339,12 @@ def test_status_publisher_loop_429_passthrough_does_not_multiply():
     p.status_thread_stop.wait = fake_wait
 
     base = PlayerSpotify._ERROR_BACKOFF_BASE
+    exp = BackoffPolicy.EXPONENTIAL
+    ra = BackoffPolicy.RETRY_AFTER
     results = iter([
-        (base, False),   # generic err: backoff base * 1
-        (180, False),    # 429 with Retry-After=180; must pass through
-        (base, False),   # generic err: backoff base * 3 (counter at 3)
+        (base, False, exp),   # generic err: backoff base * 1
+        (180, False, ra),     # 429 with Retry-After=180; must pass through
+        (base, False, exp),   # generic err: backoff base * 3 (counter at 3)
     ])
     with patch.object(p, '_poll_status_once', side_effect=lambda: next(results)):
         p._status_publisher_loop()
@@ -325,7 +376,8 @@ def test_status_publisher_loop_does_not_call_discover_device():
         discover_calls.append('called')
 
     p._discover_device = fake_discover
-    with patch.object(p, '_poll_status_once', return_value=(1.0, True)):
+    with patch.object(p, '_poll_status_once',
+                      return_value=(1.0, True, BackoffPolicy.EXPONENTIAL)):
         p._status_publisher_loop()
 
     assert discover_calls == [], (
