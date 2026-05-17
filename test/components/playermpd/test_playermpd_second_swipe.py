@@ -1,27 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Second-swipe scenario tests for playermpd (Phase 3a).
+"""Second-swipe scenario sequencing tests (Phase 3a).
 
-Covers the four behavioural scenarios called out in the Phase 3a plan:
+Where :mod:`test_decide_swipe` covers each scenario in isolation, this
+module exercises multi-swipe *sequences* against the real production
+``decide_swipe`` + ``MPDStateStore`` pair, plus the mutation step
+(``set_last_swiped_folder``) that ``PlayerMPD.play_card`` performs
+after every decision. The sequencer below is intentionally minimal:
+it does what play_card does and no more, so any divergence between
+this fixture and play_card is a bug in play_card -- not in a parallel
+implementation.
 
-1. Second swipe of the *same* card toggles between the configured
-   second_swipe_action (pause/resume/toggle/replay/...) and the first
-   swipe's ``play_folder``.
-2. Second swipe of a *different* card resets the swipe state and starts
-   a fresh first-swipe ``play_folder`` for the new card.
-3. **First swipe of the last-played card AFTER REBOOT plays it (not
-   pauses)** -- the bug fixed by separating ``last_swiped_folder`` from
-   ``last_played_folder`` so only the swipe marker is wiped at startup.
-4. Second swipe across a player handoff (e.g. Spotify activated MPD's
-   slot in between via the coordinator). The handoff itself doesn't
-   clear ``last_swiped_folder``, but the new code does *not* depend on
-   coordinator state to decide -- it's purely the swipe marker. We
-   simulate the handoff via the harness's reset_session_marker hook.
-
-The tests use the same ``_PlayCardHarness`` shape as
-``test_playermpd_play_card.py``: a real :class:`MPDStateStore`, stub
-play_folder / second_swipe_action callables, and an explicit
-``simulate_reboot`` that mirrors what PlayerMPD.__init__ does at startup
-(``state_store.clear_last_swiped_folder()``).
+Reviewer note (PR #5): prior revisions used ``_Harness`` which
+re-implemented the decision rule. That meant the four behavioural
+scenarios were locked against the harness, not against production.
+The fixture below calls ``decide_swipe`` directly and asserts on its
+return value plus the resulting store state. Reverting the bug fix
+breaks ``test_scenario_3_first_swipe_after_reboot_plays_not_pauses``.
 """
 
 from unittest import mock
@@ -29,57 +23,51 @@ from unittest import mock
 import pytest
 
 
-class _Harness:
-    """Production-shape play_card decision logic + reboot simulation.
+class _SwipeSequencer:
+    """Drive a sequence of swipes through production ``decide_swipe``.
 
-    Mirrors ``PlayerMPD.play_card`` exactly. Tests assert on the
-    sequence of ``play_folder_calls`` / ``second_swipe_calls`` to
-    distinguish first vs. second swipe paths.
+    Records the decision returned for each swipe and (separately)
+    mutates the store via ``set_last_swiped_folder`` -- exactly what
+    ``PlayerMPD.play_card`` does after consulting decide_swipe.
+    Also tracks the ``last_played_folder`` writes that
+    ``_record_play_folder_state`` would perform when a FIRST swipe
+    is dispatched to ``play_folder``.
+
+    The sequencer does NOT re-implement the decision rule -- it
+    delegates to the real ``decide_swipe`` from state_store.py.
     """
 
-    def __init__(self, store):
+    def __init__(self, state_store_module, store):
         self.state_store = store
+        self.decide_swipe = state_store_module.decide_swipe
+        self.SwipeDecision = state_store_module.SwipeDecision
         self.second_swipe_action = mock.Mock()
-        self.play_folder_calls = []
-        self.second_swipe_calls = []
+        # Recorded outcomes for assertions.
+        self.decisions = []          # list[SwipeDecision]
+        self.first_swipe_folders = []
+        self.second_swipe_folders = []
 
-    def play_folder(self, folder, recursive=False):
-        # Production play_folder sets last_played_folder via the
-        # ``_record_play_folder_state`` helper. We replicate the
-        # last_played_folder mutation so resume semantics line up.
-        self.state_store.set_last_played_folder(folder)
-        self.play_folder_calls.append(folder)
-
-    def play_card(self, folder, recursive=False):
-        last_swiped = self.state_store.last_swiped_folder()
-        is_second_swipe = bool(last_swiped) and last_swiped == folder
+    def play_card(self, folder):
+        decision = self.decide_swipe(
+            self.state_store, folder, self.second_swipe_action,
+        )
+        self.decisions.append(decision)
+        # Mirror PlayerMPD.play_card: the marker update happens AFTER
+        # the decision, regardless of which branch we take.
         self.state_store.set_last_swiped_folder(folder)
-        if self.second_swipe_action is not None and is_second_swipe:
-            self.second_swipe_calls.append(folder)
+        if decision is self.SwipeDecision.SECOND_TOGGLE:
             self.second_swipe_action()
+            self.second_swipe_folders.append(folder)
         else:
-            self.play_folder(folder, recursive)
-
-    def simulate_reboot(self, state_store_module, status_file):
-        """Re-construct the store the way PlayerMPD.__init__ does.
-
-        On reboot the store loads from disk (preserving
-        last_played_folder), and PlayerMPD then calls
-        ``state_store.clear_last_swiped_folder()`` -- the operation
-        that fixes the first-swipe-after-reboot bug.
-        """
-        # Persist current state.
-        self.state_store.save()
-        # Re-instantiate the store (reads from disk).
-        self.state_store = state_store_module.MPDStateStore(status_file)
-        # Mirror PlayerMPD.__init__'s startup clear.
-        self.state_store.clear_last_swiped_folder()
+            # Mirror what play_folder -> _record_play_folder_state does.
+            self.state_store.set_last_played_folder(folder)
+            self.first_swipe_folders.append(folder)
 
 
 @pytest.fixture
-def harness(state_store_module, tmp_state_dir):
+def sequencer(state_store_module, tmp_state_dir):
     store = state_store_module.MPDStateStore(str(tmp_state_dir / 'mps.json'))
-    return _Harness(store)
+    return _SwipeSequencer(state_store_module, store)
 
 
 # ---------------------------------------------------------------------------
@@ -87,33 +75,25 @@ def harness(state_store_module, tmp_state_dir):
 # ---------------------------------------------------------------------------
 
 
-def test_scenario_1_second_swipe_same_card_triggers_pause_toggle(harness):
-    h = harness
-    # First swipe: plays.
-    h.play_card('FolderA')
-    assert h.play_folder_calls == ['FolderA']
-    assert h.second_swipe_action.call_count == 0
-    # Second swipe of the same card: triggers configured action
-    # (in production: toggle / pause / replay / etc.).
-    h.play_card('FolderA')
-    assert h.play_folder_calls == ['FolderA']  # no new play_folder
-    assert h.second_swipe_calls == ['FolderA']
-    assert h.second_swipe_action.call_count == 1
+def test_scenario_1_second_swipe_same_card_triggers_pause_toggle(sequencer):
+    s = sequencer
+    s.play_card('FolderA')
+    s.play_card('FolderA')
+    assert s.first_swipe_folders == ['FolderA']
+    assert s.second_swipe_folders == ['FolderA']
+    assert s.second_swipe_action.call_count == 1
 
 
-def test_scenario_1b_three_swipes_alternate_via_swipe_marker(harness):
-    """Three swipes of the same card: P, S, S (because the marker is
-    only ever reset by clearing or by a *different* folder)."""
-    h = harness
-    h.play_card('X')
-    h.play_card('X')
-    h.play_card('X')
-    # Once the marker is set to 'X', every subsequent swipe of 'X' is a
-    # second swipe -- there is no explicit "alternate" toggle in
-    # production. This regression-locks that behaviour so we notice if
-    # someone re-introduces the prior implicit toggle.
-    assert h.play_folder_calls == ['X']
-    assert h.second_swipe_calls == ['X', 'X']
+def test_scenario_1b_three_swipes_alternate_via_swipe_marker(sequencer):
+    """Three swipes of the same card: F, S, S (because the marker is
+    only ever reset by clearing or by a *different* folder). This
+    regression-locks that we have NOT re-introduced an implicit toggle."""
+    s = sequencer
+    s.play_card('X')
+    s.play_card('X')
+    s.play_card('X')
+    assert s.first_swipe_folders == ['X']
+    assert s.second_swipe_folders == ['X', 'X']
 
 
 # ---------------------------------------------------------------------------
@@ -121,26 +101,25 @@ def test_scenario_1b_three_swipes_alternate_via_swipe_marker(harness):
 # ---------------------------------------------------------------------------
 
 
-def test_scenario_2_swipe_of_different_card_is_first_swipe(harness):
-    h = harness
-    h.play_card('A')
-    h.play_card('B')  # different card -> first swipe of B
-    assert h.play_folder_calls == ['A', 'B']
-    assert h.second_swipe_calls == []
-    assert h.state_store.last_swiped_folder() == 'B'
-    # last_played_folder follows the most recent first swipe.
-    assert h.state_store.last_played_folder() == 'B'
+def test_scenario_2_swipe_of_different_card_is_first_swipe(sequencer):
+    s = sequencer
+    s.play_card('A')
+    s.play_card('B')
+    assert s.first_swipe_folders == ['A', 'B']
+    assert s.second_swipe_folders == []
+    assert s.state_store.last_swiped_folder() == 'B'
+    assert s.state_store.last_played_folder() == 'B'
 
 
-def test_scenario_2b_back_to_first_card_is_first_swipe_again(harness):
+def test_scenario_2b_back_to_first_card_is_first_swipe_again(sequencer):
     """A -> B -> A: every transition is a fresh first swipe because the
     swipe marker only matches consecutive duplicates."""
-    h = harness
-    h.play_card('A')
-    h.play_card('B')
-    h.play_card('A')
-    assert h.play_folder_calls == ['A', 'B', 'A']
-    assert h.second_swipe_calls == []
+    s = sequencer
+    s.play_card('A')
+    s.play_card('B')
+    s.play_card('A')
+    assert s.first_swipe_folders == ['A', 'B', 'A']
+    assert s.second_swipe_folders == []
 
 
 # ---------------------------------------------------------------------------
@@ -149,55 +128,61 @@ def test_scenario_2b_back_to_first_card_is_first_swipe_again(harness):
 
 
 def test_scenario_3_first_swipe_after_reboot_plays_not_pauses(
-    harness, state_store_module, tmp_state_dir,
+    state_store_module, tmp_state_dir,
 ):
-    """THE bug we're fixing. Before Phase 3a:
-       last_played_folder was kept across reboots AND was the
-       discriminator for second-swipe detection, so the very first
-       swipe of the last-played card after reboot looked like a second
-       swipe (and triggered pause/toggle instead of playing).
+    """End-to-end sequencing of THE bug fix: play, reboot, play again.
 
-    After Phase 3a:
-       last_played_folder is preserved (resume needs it) but
-       last_swiped_folder is the new discriminator, and the store
-       wipes only the swipe marker on init. So the first post-reboot
-       swipe of the last-played card now plays correctly.
+    Uses a real :class:`MPDStateStore` re-instantiation (the reboot
+    simulation in :mod:`test_decide_swipe` covers the same path in
+    isolation; here we verify the full sequencer also sees FIRST after
+    the restart). Reverting either ``clear_last_swiped_folder`` or
+    the swipe-discriminator change breaks this test.
     """
-    h = harness
-    h.play_card('LastPlayed')
-    assert h.play_folder_calls == ['LastPlayed']
+    status_file = str(tmp_state_dir / 'mps.json')
+    store = state_store_module.MPDStateStore(status_file)
+    s = _SwipeSequencer(state_store_module, store)
+
+    s.play_card('LastPlayed')
+    assert s.first_swipe_folders == ['LastPlayed']
 
     # Simulate process exit + start.
-    status_file = str(tmp_state_dir / 'mps.json')
-    h.simulate_reboot(state_store_module, status_file)
+    s.state_store.save()
+    new_store = state_store_module.MPDStateStore(status_file)
+    new_store.clear_last_swiped_folder()  # what PlayerMPD.__init__ does
 
-    # Sanity: last_played_folder survives, last_swiped_folder is wiped.
-    assert h.state_store.last_played_folder() == 'LastPlayed'
-    assert h.state_store.last_swiped_folder() == ''
+    # Sanity: last_played survives, swipe marker is wiped.
+    assert new_store.last_played_folder() == 'LastPlayed'
+    assert new_store.last_swiped_folder() == ''
 
-    # First post-reboot swipe of the same card MUST be a first swipe.
-    h.play_card('LastPlayed')
-    assert h.play_folder_calls == ['LastPlayed', 'LastPlayed'], (
-        "post-reboot first swipe must trigger play_folder, not the "
-        "second_swipe_action -- this is the bug fixed by Phase 3a"
+    s2 = _SwipeSequencer(state_store_module, new_store)
+    s2.play_card('LastPlayed')
+    assert s2.first_swipe_folders == ['LastPlayed'], (
+        "post-reboot first swipe must trigger first-swipe (play_folder), "
+        "not the second_swipe_action -- this is the bug fixed by Phase 3a"
     )
-    assert h.second_swipe_calls == []
+    assert s2.second_swipe_folders == []
 
 
 def test_scenario_3b_post_reboot_two_consecutive_swipes_still_toggle(
-    harness, state_store_module, tmp_state_dir,
+    state_store_module, tmp_state_dir,
 ):
     """After reboot: first swipe plays, second swipe toggles -- normal
     behaviour resumes from the post-reboot first swipe onward."""
-    h = harness
-    h.play_card('Card')
     status_file = str(tmp_state_dir / 'mps.json')
-    h.simulate_reboot(state_store_module, status_file)
+    store = state_store_module.MPDStateStore(status_file)
+    s = _SwipeSequencer(state_store_module, store)
+    s.play_card('Card')
 
-    h.play_card('Card')  # first swipe after reboot (plays)
-    h.play_card('Card')  # second swipe after reboot (toggles)
-    assert h.play_folder_calls == ['Card', 'Card']
-    assert h.second_swipe_calls == ['Card']
+    # Reboot.
+    s.state_store.save()
+    new_store = state_store_module.MPDStateStore(status_file)
+    new_store.clear_last_swiped_folder()
+
+    s2 = _SwipeSequencer(state_store_module, new_store)
+    s2.play_card('Card')  # first swipe after reboot (plays)
+    s2.play_card('Card')  # second swipe after reboot (toggles)
+    assert s2.first_swipe_folders == ['Card']
+    assert s2.second_swipe_folders == ['Card']
 
 
 # ---------------------------------------------------------------------------
@@ -205,31 +190,22 @@ def test_scenario_3b_post_reboot_two_consecutive_swipes_still_toggle(
 # ---------------------------------------------------------------------------
 
 
-def test_scenario_4_second_swipe_after_player_handoff(harness):
-    """A handoff (Spotify or podcast claimed the active slot via the
-    coordinator) does NOT clear the playermpd swipe marker, so a
-    user who swipes the MPD card again -- with no intervening RFID
-    activity -- still gets the configured second_swipe_action.
+def test_scenario_4_second_swipe_after_player_handoff(sequencer):
+    """A coordinator handoff (Spotify or podcast claimed the active
+    slot) does NOT touch the playermpd store, so a user who swipes the
+    MPD card again -- with no intervening RFID activity -- still gets
+    the configured second_swipe_action.
 
-    The decision is purely about ``last_swiped_folder`` belonging to
-    playermpd; coordinator state has no effect. This regression locks
-    that boundary so a future Phase doesn't add a coordinator check
-    inside play_card and accidentally regress the swipe semantics.
+    The decision is purely about ``last_swiped_folder``; coordinator
+    state has no input. This regression locks that boundary so a future
+    phase doesn't add a coordinator check inside ``decide_swipe`` and
+    accidentally regress the swipe semantics.
     """
-    h = harness
-    # First swipe via MPD card.
-    h.play_card('MpdCard')
-    assert h.play_folder_calls == ['MpdCard']
+    s = sequencer
+    s.play_card('MpdCard')
+    assert s.first_swipe_folders == ['MpdCard']
 
-    # Simulate handoff: Spotify takes the active slot. From playermpd's
-    # POV nothing local changes -- its store is untouched, only the
-    # coordinator's _current flips. The handoff might pause MPD via
-    # the coordinator-driven pause_fn, but it does NOT clear the
-    # store's last_swiped_folder marker.
-    #
-    # We assert this by observing that another swipe of the SAME card
-    # is still treated as second-swipe even though, conceptually,
-    # MPD is no longer the active backend.
-    h.play_card('MpdCard')
-    assert h.second_swipe_calls == ['MpdCard']
-    assert h.second_swipe_action.call_count == 1
+    # Handoff happens externally — no change to s.state_store.
+    s.play_card('MpdCard')
+    assert s.second_swipe_folders == ['MpdCard']
+    assert s.second_swipe_action.call_count == 1

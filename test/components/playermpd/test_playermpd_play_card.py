@@ -1,136 +1,27 @@
 # -*- coding: utf-8 -*-
-"""Regression tests for play_card / play_folder flows.
+"""Regression tests for play_card / play_folder flows (Phase 3a).
 
 Renamed from ``test_state_lock.py`` to reflect Phase 3a's broader scope:
 the file still owns the Phase 1 lock-discipline regressions plus the
-Phase 3a swipe-decision / state-split coverage.
+Phase 3a source-grep checks that complement the behavioural tests for
+``decide_swipe`` in :mod:`test_decide_swipe`.
 
-The play_card flow is exercised through a thin harness that wires a
-real :class:`MPDStateStore` to a stub ``play_folder`` / ``second_swipe``
-pair (matching the production method's decision shape). Instantiating
-the full :class:`PlayerMPD` requires a live MPD socket and the plugin
-system; that's out of scope for unit tests. The harness fails fast if
-the production code's swipe-decision shape diverges -- keep them in
-lockstep.
+Reviewer note (PR #5): the prior revisions of this file used a
+``_PlayCardHarness`` that re-implemented production's swipe decision
+and then asserted on the harness. That meant reverting production
+would have left the tests green. Phase 3a extracts the decision into
+``decide_swipe`` (state_store.py); the behavioural coverage now lives
+in :mod:`test_decide_swipe` and :mod:`test_playermpd_second_swipe`,
+both of which call production code directly. The source-grep checks
+below remain as belt-and-braces against accidental inlining /
+re-introduction of the buggy discriminator.
 """
 
-import threading
-from unittest import mock
-
-import pytest
+from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 regressions: state-lock discipline of _mpd_status_poll
-# ---------------------------------------------------------------------------
-
-
-class _StateHarness:
-    """Mirror PlayerMPD's state-protected ``_mpd_status_poll`` + ``_save_state``."""
-
-    def __init__(self):
-        self.state_lock = threading.Lock()
-        self.music_player_status = {
-            'player_status': {},
-            'audio_folder_status': {},
-        }
-        self.current_folder_status = {}
-        self.mpd_status = {}
-
-    def poll(self, mpd_status, current_song):
-        with self.state_lock:
-            self.mpd_status.update(mpd_status)
-            self.mpd_status.update(current_song)
-            if self.mpd_status.get('elapsed') is not None:
-                self.current_folder_status['ELAPSED'] = self.mpd_status['elapsed']
-                self.music_player_status['player_status']['CURRENTSONGPOS'] = \
-                    self.mpd_status['song']
-                self.music_player_status['player_status']['CURRENTFILENAME'] = \
-                    self.mpd_status['file']
-            snapshot = dict(self.mpd_status)
-        return snapshot
-
-    def snapshot(self):
-        with self.state_lock:
-            return {
-                k: dict(v) if isinstance(v, dict) else v
-                for k, v in self.music_player_status.items()
-            }
-
-
-def test_poll_holds_state_lock_during_mutations():
-    h = _StateHarness()
-    h.poll(
-        {'state': 'play', 'elapsed': '12.0', 'song': '0', 'file': 'a.mp3'},
-        {'file': 'a.mp3'},
-    )
-    snap = h.snapshot()
-    assert snap['player_status']['CURRENTFILENAME'] == 'a.mp3'
-
-
-def test_concurrent_poll_and_save_yields_consistent_snapshots():
-    h = _StateHarness()
-    h.poll({'state': 'play', 'elapsed': '0', 'song': '0', 'file': 'a.mp3'},
-           {'file': 'a.mp3'})
-    stop = threading.Event()
-    failures = []
-
-    def poller():
-        i = 0
-        while not stop.is_set():
-            f = f'song{i % 100}.mp3'
-            h.poll({'state': 'play', 'elapsed': str(i), 'song': str(i), 'file': f},
-                   {'file': f})
-            i += 1
-
-    def snapshotter():
-        while not stop.is_set():
-            snap = h.snapshot()
-            ps = snap.get('player_status', {})
-            fname = ps.get('CURRENTFILENAME')
-            spos = ps.get('CURRENTSONGPOS')
-            if fname is not None and spos is not None:
-                expected_file = f'song{int(spos) % 100}.mp3'
-                if fname != expected_file:
-                    failures.append((fname, spos))
-
-    t1 = threading.Thread(target=poller)
-    t2 = threading.Thread(target=poller)
-    s = threading.Thread(target=snapshotter)
-    t1.start()
-    t2.start()
-    s.start()
-    import time
-    time.sleep(0.5)
-    stop.set()
-    t1.join()
-    t2.join()
-    s.join()
-
-    assert failures == [], f"observed {len(failures)} torn reads, sample: {failures[:3]}"
-
-
-def test_state_lock_serialises_dict_updates():
-    h = _StateHarness()
-
-    def writer(prefix):
-        for i in range(1000):
-            with h.state_lock:
-                h.music_player_status['audio_folder_status'][f'{prefix}_{i}'] = {
-                    'PLAYSTATUS': 'play',
-                }
-
-    t1 = threading.Thread(target=writer, args=('a',))
-    t2 = threading.Thread(target=writer, args=('b',))
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
-    assert len(h.music_player_status['audio_folder_status']) == 2000
-
-
-# ---------------------------------------------------------------------------
-# Production-code wiring smoke-checks.
+# Production-code wiring smoke-checks (source greps).
 # ---------------------------------------------------------------------------
 
 
@@ -142,7 +33,6 @@ def test_player_mpd_module_defines_state_lock():
     aliases it as ``self.state_lock = self.state_store.state_lock`` so
     the poll thread's ``with self.state_lock:`` discipline is unchanged.
     """
-    from pathlib import Path
     repo_root = Path(__file__).resolve().parents[3]
     init_text = (
         repo_root / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
@@ -159,7 +49,6 @@ def test_player_mpd_get_player_type_and_version_uses_attribute():
     """``mpd_version`` is an attribute on python-mpd2; the prior code
     called it ``mpd_version()`` which raised TypeError on the real
     client. Phase 1 fix: assert the call site reads the attribute."""
-    from pathlib import Path
     source_path = (
         Path(__file__).resolve().parents[3]
         / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
@@ -173,89 +62,8 @@ def test_player_mpd_get_player_type_and_version_uses_attribute():
 
 
 # ---------------------------------------------------------------------------
-# Phase 3a: play_card swipe-decision harness
-# ---------------------------------------------------------------------------
-
-
-class _PlayCardHarness:
-    """Re-implements the play_card decision shape from ``PlayerMPD``.
-
-    Drives a real :class:`MPDStateStore` (the production object), then
-    delegates to stub ``play_folder`` / ``second_swipe_action`` callables
-    so we can assert which path was taken. If the production
-    ``play_card`` decision logic diverges from what this harness models,
-    update both together -- the harness exists to make the four
-    second-swipe scenarios fully unit-testable without booting MPD.
-    """
-
-    def __init__(self, store):
-        self.state_store = store
-        self.second_swipe_action = None  # set by tests if needed
-        self.play_folder_calls = []
-        self.second_swipe_calls = []
-
-    def play_folder(self, folder, recursive=False):
-        # Production ``play_folder`` updates last_played_folder via the
-        # store. Mirror that here so tests can observe the side effect.
-        self.state_store.set_last_played_folder(folder)
-        self.play_folder_calls.append((folder, recursive))
-
-    def play_card(self, folder, recursive=False):
-        last_swiped = self.state_store.last_swiped_folder()
-        is_second_swipe = bool(last_swiped) and last_swiped == folder
-        self.state_store.set_last_swiped_folder(folder)
-        if self.second_swipe_action is not None and is_second_swipe:
-            self.second_swipe_calls.append(folder)
-            self.second_swipe_action()
-        else:
-            self.play_folder(folder, recursive)
-
-
-@pytest.fixture
-def play_card_harness(state_store_module, tmp_state_dir):
-    store = state_store_module.MPDStateStore(str(tmp_state_dir / 'mps.json'))
-    return _PlayCardHarness(store)
-
-
-def test_play_card_first_swipe_calls_play_folder(play_card_harness):
-    h = play_card_harness
-    h.second_swipe_action = mock.Mock()
-    h.play_card('AlbumA')
-    assert h.play_folder_calls == [('AlbumA', False)]
-    assert h.second_swipe_action.call_count == 0
-    assert h.state_store.last_swiped_folder() == 'AlbumA'
-    assert h.state_store.last_played_folder() == 'AlbumA'
-
-
-def test_play_card_second_swipe_of_same_card_triggers_action(play_card_harness):
-    """Two consecutive swipes of the same card: 1st triggers play_folder,
-    2nd triggers the configured second_swipe_action."""
-    h = play_card_harness
-    h.second_swipe_action = mock.Mock()
-    h.play_card('AlbumA')
-    h.play_card('AlbumA')
-    assert h.play_folder_calls == [('AlbumA', False)]
-    assert h.second_swipe_calls == ['AlbumA']
-    assert h.second_swipe_action.call_count == 1
-
-
-def test_play_card_second_swipe_disabled_falls_back_to_first_swipe(play_card_harness):
-    """If ``second_swipe_action`` is None, every swipe is first-swipe."""
-    h = play_card_harness
-    h.second_swipe_action = None
-    h.play_card('AlbumA')
-    h.play_card('AlbumA')
-    assert h.play_folder_calls == [('AlbumA', False), ('AlbumA', False)]
-
-
-def test_play_card_recursive_flag_propagates(play_card_harness):
-    h = play_card_harness
-    h.play_card('AlbumA', recursive=True)
-    assert h.play_folder_calls == [('AlbumA', True)]
-
-
-# ---------------------------------------------------------------------------
-# Production-code wiring smoke-check for play_folder split (Phase 3a)
+# Phase 3a: play_card source-grep guards (behaviour lives in
+# test_decide_swipe.py and test_playermpd_second_swipe.py).
 # ---------------------------------------------------------------------------
 
 
@@ -263,7 +71,6 @@ def test_play_folder_is_split_into_state_and_trigger_paths():
     """Phase 3a separates state bookkeeping from MPD wire activity in
     play_folder. Smoke-check via source inspection so a refactor that
     inlines them again is caught."""
-    from pathlib import Path
     src_text = (
         Path(__file__).resolve().parents[3]
         / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
@@ -275,26 +82,26 @@ def test_play_folder_is_split_into_state_and_trigger_paths():
     assert 'self._trigger_play_folder(folder, recursive)' in src_text
 
 
-def test_play_card_uses_last_swiped_folder_not_last_played():
-    """Phase 3a fix for the first-swipe-after-reboot bug. The production
-    code must consult ``last_swiped_folder`` (cleared at startup) rather
-    than ``last_played_folder`` (preserved across reboots) for the
-    second-swipe decision."""
-    from pathlib import Path
+def test_play_card_delegates_to_decide_swipe():
+    """Phase 3a (reviewer ask #1): play_card must call ``decide_swipe``
+    rather than re-deriving the swipe rule inline. This is what makes
+    the behavioural tests in :mod:`test_decide_swipe` regression-locks
+    on the bug fix; if play_card inlines the rule again, the production-
+    coverage chain breaks."""
     src_text = (
         Path(__file__).resolve().parents[3]
         / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
     ).read_text()
-    # Locate play_card body.
     pc_start = src_text.index('def play_card(self, folder')
     pc_end = src_text.index('def get_single_coverart', pc_start)
     pc_body = src_text[pc_start:pc_end]
 
-    assert 'self.state_store.last_swiped_folder()' in pc_body, (
-        "play_card must consult last_swiped_folder for second-swipe detection"
+    assert 'decide_swipe(' in pc_body, (
+        "play_card must call decide_swipe(...) so the swipe rule has a "
+        "single source of truth"
     )
-    assert 'set_last_swiped_folder' in pc_body, (
-        "play_card must update last_swiped_folder on each swipe"
+    assert 'SwipeDecision.SECOND_TOGGLE' in pc_body, (
+        "play_card must branch on the SwipeDecision enum"
     )
     # The old discriminator must be gone from play_card. (It is still
     # legitimate elsewhere - replay / replay_if_stopped read it.)
@@ -306,7 +113,6 @@ def test_activation_rule_is_documented_in_module_docstring():
     follow-up #1). Assert the docstring section exists in both
     coordinator.py and playermpd/__init__.py so a future docstring
     sweep doesn't drop it."""
-    from pathlib import Path
     repo_root = Path(__file__).resolve().parents[3]
     init_text = (
         repo_root / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
@@ -323,7 +129,6 @@ def test_activation_call_set_matches_documented_rule():
     call ``_activate_mpd()``, and the passive ones do not. This is a
     grep-level test -- a behavioural test would need a full PlayerMPD
     instance which we can't construct in unit scope."""
-    from pathlib import Path
     src_text = (
         Path(__file__).resolve().parents[3]
         / 'src' / 'jukebox' / 'components' / 'playermpd' / '__init__.py'
@@ -353,7 +158,3 @@ def test_activation_call_set_matches_documented_rule():
             f"{name} is documented as passive but calls self._activate_mpd() "
             f"-- this would silently steal playback from another backend"
         )
-
-
-# Keep pytest + mock imports in use (referenced in harness tests).
-_ = (pytest, mock)
