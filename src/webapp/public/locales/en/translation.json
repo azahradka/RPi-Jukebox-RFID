@@ -336,6 +336,7 @@
       "paste-url-label": "Paste callback URL here",
       "paste-url-submit": "Complete Connection",
       "paste-url-error": "Could not find an authorization code in that URL. Make sure you copied the full URL from the address bar.",
+      "paste-timeout": "The Spotify login window was open for too long without completing. Please try connecting again.",
       "auth-failed": "Authentication failed. Please try again.",
       "edit-config": "Edit Credentials"
     },
