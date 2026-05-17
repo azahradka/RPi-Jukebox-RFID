@@ -45,7 +45,7 @@ import jukebox.cfghandler
 import jukebox.plugs as plugs
 import jukebox.publishing as publishing
 import components.player
-import components.player.coordinator
+from components.player.coordinator import get_coordinator
 
 from .feed_manager import PodcastFeedManager
 from .episode_queue import EpisodeQueueManager
@@ -259,7 +259,7 @@ class PlayerPodcast:
         (the cleanest baseline). The subsequent ``play_single`` call
         then drives MPD with the new episode.
         """
-        with components.player.coordinator.get_coordinator().activate('podcast'):
+        with get_coordinator().activate('podcast'):
             pass
 
     def _toggle_playback(self):
@@ -1210,7 +1210,7 @@ def initialize():
     # podcast cleanly before the new backend takes over. pause(1)
     # delegates to MPD's pause, preserving the resume position which
     # the position-tracking thread persists to disk.
-    components.player.coordinator.get_coordinator().register(
+    get_coordinator().register(
         name='podcast',
         pause_fn=lambda: player_ctrl.pause(1),
         stop_fn=player_ctrl.stop,

@@ -91,7 +91,7 @@ import functools
 import json
 from pathlib import Path
 import components.player
-import components.player.coordinator
+from components.player.coordinator import get_coordinator
 import jukebox.cfghandler
 import jukebox.utils as utils
 from jukebox.utils.atomic_io import atomic_write_json_safe
@@ -310,7 +310,7 @@ class PlayerMPD:
         is torn down), bounded by a 5s timeout. Idempotent when MPD
         is already current.
         """
-        coordinator = components.player.coordinator.get_coordinator()
+        coordinator = get_coordinator()
         with coordinator.activate('mpd'):
             pass
 
@@ -376,7 +376,7 @@ class PlayerMPD:
 
             published_snapshot = dict(self.mpd_status)
 
-        if components.player.coordinator.get_coordinator().current() == 'mpd':
+        if get_coordinator().current() == 'mpd':
             publishing.get_publisher().send('playerstatus', published_snapshot)
 
     # MPD can play absolute paths but can find songs in its database only by relative path
@@ -903,7 +903,7 @@ def initialize():
     # Register with the player coordinator so cross-backend handoffs
     # (Spotify/podcast claiming the active slot) pause then stop MPD
     # cleanly before the new backend takes over.
-    components.player.coordinator.get_coordinator().register(
+    get_coordinator().register(
         name='mpd',
         pause_fn=lambda: player_ctrl.pause(1),
         stop_fn=player_ctrl.stop,
