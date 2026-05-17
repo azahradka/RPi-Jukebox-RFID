@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -54,9 +54,14 @@ const SpotifyConfigForm = ({
     return () => { cancelled = true; };
   }, []);
 
+  // Track mount so the post-save reset doesn't fire after the form has
+  // been swapped out (saving success hides the form via the parent).
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   const handleSave = () => {
     onSave({ clientId, clientSecret }).then((res) => {
-      if (res && res.ok) setClientSecret('');
+      if (res && res.ok && mountedRef.current) setClientSecret('');
     });
   };
 
