@@ -21,13 +21,15 @@ const StatusIpAddress = () => {
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
-      const { result, error } = await request('getIpAddress');
-
-      if(result) setPrimaryText(result);
-      if(error) {
+      // Phase 5a FU#1: request() throws on failure; local try/catch
+      // surfaces the error inline (non-critical status widget).
+      try {
+        const { result } = await request('getIpAddress');
+        if(result) setPrimaryText(result);
+      } catch (err) {
         setPrimaryText(`⚠️ ${t('settings.status.ip-address.loading-error')}`)
-        console.error(error);
-      };
+        console.error(err);
+      }
       setIsLoading(false);
     }
 

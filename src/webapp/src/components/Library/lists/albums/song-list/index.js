@@ -29,19 +29,22 @@ const SongList = ({
   useEffect(() => {
     const getSongList = async () => {
       setIsLoading(true);
-      const { result, error } = await request(
-        'songList',
-        {
-          album: decodeURIComponent(album),
-          albumartist: decodeURIComponent(artist),
+      // Phase 5a FU#1: try/catch around the (now-throwing) request().
+      try {
+        const { result } = await request(
+          'songList',
+          {
+            album: decodeURIComponent(album),
+            albumartist: decodeURIComponent(artist),
+          }
+        );
+        if(result) {
+          setSongs(result);
         }
-      );
-      setIsLoading(false);
-
-      if(result) {
-        setSongs(result);
+      } catch (err) {
+        setError(err);
       }
-      if(error) setError(error);
+      setIsLoading(false);
     }
 
     getSongList();

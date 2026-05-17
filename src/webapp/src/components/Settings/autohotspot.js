@@ -24,10 +24,17 @@ const SettingsAutoHotpot = () => {
   const [isLoading, setIsLoading] = useState(true);
 
   const getAutohotspotStatus = async () => {
-    const { result, error } = await request('getAutohotspotStatus');
-
-    if(result && result !== 'error') setAutohotspotStatus(result);
-    if((result && result === 'error') || error) console.error(error);
+    // Phase 5a FU#1: request() throws on failure (Phase 1). The
+    // legacy ``error`` destructure was a no-op. We still treat the
+    // in-band 'error' string from the backend as a soft failure
+    // (autohotspot not installed / partial config).
+    try {
+      const { result } = await request('getAutohotspotStatus', {}, { swallow: true });
+      if (result && result !== 'error') setAutohotspotStatus(result);
+      else if (result === 'error') console.error(`getAutohotspotStatus returned 'error'`);
+    } catch (err) {
+      console.error('getAutohotspotStatus failed:', err);
+    }
   }
 
   const toggleAutoHotspot = async () => {
@@ -36,10 +43,14 @@ const SettingsAutoHotpot = () => {
 
     setIsLoading(true);
     setAutohotspotStatus(status);
-    const { result, error } = await request(`${action}Autohotspot`);
-
-    if (error || result === 'error') {
-      console.error(`An error occured while performing '${action}AutoHotspot'`);
+    try {
+      const { result } = await request(`${action}Autohotspot`, {}, { swallow: true });
+      if (result === 'error') {
+        console.error(`An error occured while performing '${action}AutoHotspot'`);
+        await getAutohotspotStatus();
+      }
+    } catch (err) {
+      console.error(`'${action}Autohotspot' failed:`, err);
       await getAutohotspotStatus();
     }
 

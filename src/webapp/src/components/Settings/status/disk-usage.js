@@ -28,25 +28,30 @@ const StatusDiskUsage = () => {
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
-      const { result, error } = await request('getDiskUsage');
+      // Phase 5a FU#1: request() throws on failure; wrap in try/catch
+      // for local error UX (display warning) instead of bubbling to
+      // the top-level boundary, since disk-usage is a non-critical
+      // status widget.
+      try {
+        const { result } = await request('getDiskUsage');
 
-      if(result) {
-        setDiskUsage(calcPercantage(result));
+        if(result) {
+          setDiskUsage(calcPercantage(result));
 
-        const text = t(
-          'settings.status.disk-usage.result',
-          {
-            used: calcMbToGb(result?.used),
-            total: calcMbToGb(result?.total),
-            result: calcPercantage(result)
-          }
-        );
-        setPrimaryText(text);
-      }
-      if(error) {
+          const text = t(
+            'settings.status.disk-usage.result',
+            {
+              used: calcMbToGb(result?.used),
+              total: calcMbToGb(result?.total),
+              result: calcPercantage(result)
+            }
+          );
+          setPrimaryText(text);
+        }
+      } catch (err) {
         setPrimaryText(`⚠️ ${t('settings.status.disk-usage.loading-error')}`)
-        console.error(error);
-      };
+        console.error(err);
+      }
       setIsLoading(false);
     }
 
