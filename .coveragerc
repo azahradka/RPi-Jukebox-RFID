@@ -1,2 +1,8 @@
 [run]
-omit = test/*
+omit =
+    test/*
+    # Interactive curses REPL script -- the dispatch surface (parse_json_args,
+    # build_argparser, runcmd) is exercised by test/tools/test_run_rpc_tool_args.py
+    # but the REPL body (get_input, autocomplete, format_*) is curses-bound
+    # and not amenable to in-CI coverage.
+    src/jukebox/run_rpc_tool.py
