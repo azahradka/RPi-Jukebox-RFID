@@ -18,8 +18,11 @@ import { SUBSCRIPTIONS } from '../../config';
  * The provider now owns a topic-keyed store with per-topic subscribers
  * (see ``store.js``). Consumers read individual topics via
  * ``useSubscription(topic)`` (see ``src/hooks/useSubscription.js``) which
- * uses ``useSyncExternalStore`` to re-render only on changes to that
- * topic.
+ * uses a manual ``useState`` + ``useEffect`` shim (React 17 does not ship
+ * ``useSyncExternalStore``; the shim follows the official
+ * ``use-sync-external-store`` polyfill) to re-render only on changes to
+ * that topic. Phase 5b FU: docstring corrected to match the actual
+ * implementation. A React 18 upgrade would let us drop the shim.
  *
  * The context value (``{ store, setState }``) is stable for the lifetime
  * of the provider, so context consumers no longer re-render at all when

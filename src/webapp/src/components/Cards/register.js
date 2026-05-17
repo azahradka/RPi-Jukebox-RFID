@@ -15,9 +15,6 @@ const CardsRegister = () => {
   const locationState = location.state;
   const registerCard = locationState?.registerCard;
 
-  console.log('CardsRegister render - locationState:', locationState);
-  console.log('CardsRegister render - registerCard:', registerCard);
-
   const [cardId, setCardId] = useState(undefined);
   const [actionData, setActionData] = useState({});
 
@@ -30,12 +27,8 @@ const CardsRegister = () => {
   }, [registerCard, swipedCardId])
 
   useEffect(() => {
-    console.log('useEffect triggered - locationState:', locationState);
     if (locationState?.registerCard?.actionData) {
-      console.log('Setting actionData:', locationState.registerCard.actionData);
       setActionData(locationState.registerCard.actionData);
-    } else {
-      console.log('No actionData in locationState');
     }
   }, [locationState]);
 
