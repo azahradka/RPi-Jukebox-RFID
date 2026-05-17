@@ -277,3 +277,62 @@ class MPDStateStore:
         entry = self.ensure_folder_entry(folder)
         self.current_folder_status = entry
         return entry
+
+    # ------------------------------------------------------------------
+    # Poll-thread merge (Phase 3a follow-up — reviewer ask #2)
+    # ------------------------------------------------------------------
+    def apply_poll(
+        self,
+        new_status: Dict[str, Any],
+        new_song: Dict[str, Any],
+        mpd_status_buffer: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Merge a single MPD poll cycle into the store under ``state_lock``.
+
+        Extracted from ``PlayerMPD._mpd_status_poll`` so the dict-merge
+        rules (which fields propagate to ``player_status`` vs.
+        ``current_folder_status``, when to clear ``volume``, etc.) can be
+        regression-tested without booting MPD or the plugin system.
+
+        The buffer (``mpd_status_buffer``) is the running snapshot kept
+        on ``PlayerMPD`` as ``self.mpd_status``. It is mutated in place
+        rather than re-allocated so the publish-side `dict(self.mpd_status)`
+        copy semantic is preserved. The buffer is passed in (rather than
+        owned by the store) so callers that don't need the published-
+        snapshot side channel — like unit tests — can supply a throwaway
+        ``{}`` and still get the store mutations.
+
+        :param new_status: Output of ``MPDClient.status()`` (may be empty).
+        :param new_song: Output of ``MPDClient.currentsong()`` (may be
+            empty if MPD has no current song).
+        :param mpd_status_buffer: The running buffer to merge into.
+            Mutated in place. The post-merge contents are returned as a
+            copy for publish-side use.
+        :returns: A copy of ``mpd_status_buffer`` after merge, suitable
+            for handing to the publisher. (Done as a copy under the lock
+            so the publisher sees a consistent snapshot.)
+        """
+        with self.state_lock:
+            mpd_status_buffer.update(new_status)
+            mpd_status_buffer.update(new_song)
+
+            if mpd_status_buffer.get('elapsed') is not None:
+                self.current_folder_status["ELAPSED"] = mpd_status_buffer['elapsed']
+                self.music_player_status['player_status']["CURRENTSONGPOS"] = mpd_status_buffer['song']
+                self.music_player_status['player_status']["CURRENTFILENAME"] = mpd_status_buffer['file']
+
+            if mpd_status_buffer.get('file') is not None:
+                self.current_folder_status["CURRENTFILENAME"] = mpd_status_buffer['file']
+                self.current_folder_status["CURRENTSONGPOS"] = mpd_status_buffer['song']
+                self.current_folder_status["ELAPSED"] = mpd_status_buffer.get('elapsed', '0.0')
+                self.current_folder_status["PLAYSTATUS"] = mpd_status_buffer['state']
+                self.current_folder_status["RESUME"] = "OFF"
+                self.current_folder_status["SHUFFLE"] = "OFF"
+                self.current_folder_status["LOOP"] = "OFF"
+                self.current_folder_status["SINGLE"] = "OFF"
+
+            # Volume is published via the 'volume' component — drop it
+            # from the buffer so we don't double-publish.
+            mpd_status_buffer.pop('volume', None)
+
+            return dict(mpd_status_buffer)

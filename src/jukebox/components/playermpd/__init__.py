@@ -340,36 +340,22 @@ class PlayerMPD:
             except Exception:
                 pass  # Podcast player not active or not available
 
-        with self.state_lock:
-            self.mpd_status.update(new_status)
-            self.mpd_status.update(new_song)
-
-            if self.mpd_status.get('elapsed') is not None:
-                self.current_folder_status["ELAPSED"] = self.mpd_status['elapsed']
-                self.music_player_status['player_status']["CURRENTSONGPOS"] = self.mpd_status['song']
-                self.music_player_status['player_status']["CURRENTFILENAME"] = self.mpd_status['file']
-
-            if self.mpd_status.get('file') is not None:
-                self.current_folder_status["CURRENTFILENAME"] = self.mpd_status['file']
-                self.current_folder_status["CURRENTSONGPOS"] = self.mpd_status['song']
-                self.current_folder_status["ELAPSED"] = self.mpd_status.get('elapsed', '0.0')
-                self.current_folder_status["PLAYSTATUS"] = self.mpd_status['state']
-                self.current_folder_status["RESUME"] = "OFF"
-                self.current_folder_status["SHUFFLE"] = "OFF"
-                self.current_folder_status["LOOP"] = "OFF"
-                self.current_folder_status["SINGLE"] = "OFF"
-
-            # Delete the volume key to avoid confusion
-            # Volume is published via the 'volume' component!
-            try:
-                del self.mpd_status['volume']
-            except KeyError:
-                pass
-
-            if podcast_overlay:
+        # All dict-merge logic lives in ``MPDStateStore.apply_poll`` so
+        # the rules are regression-tested without booting MPD (Phase 3a
+        # follow-up; reviewer ask #2). The podcast overlay merges in
+        # after apply_poll because the published snapshot must include
+        # podcast fields while the persisted state must not.
+        published_snapshot = self.state_store.apply_poll(
+            new_status, new_song, self.mpd_status,
+        )
+        if podcast_overlay:
+            # Re-take the lock briefly to fold the overlay into both the
+            # running buffer and the snapshot we publish. The overlay is
+            # informational (title/artist for podcast HTTP URLs) so we
+            # don't gate it on the state-merge above.
+            with self.state_lock:
                 self.mpd_status.update(podcast_overlay)
-
-            published_snapshot = dict(self.mpd_status)
+                published_snapshot.update(podcast_overlay)
 
         if get_coordinator().current() == 'mpd':
             publishing.get_publisher().send('playerstatus', published_snapshot)

@@ -163,6 +163,145 @@ def test_state_lock_serialises_concurrent_writes(state_store_module, tmp_state_d
     assert len(store.audio_folder_status) == 2000
 
 
+# ---------------------------------------------------------------------------
+# apply_poll — production replacement for the deleted _StateHarness
+# (Phase 3a follow-up, reviewer ask #2 on PR #5)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_poll_propagates_elapsed_to_player_and_folder_status(
+    state_store_module, tmp_state_dir,
+):
+    """When ``elapsed`` is present, the poll merge writes it into both
+    ``current_folder_status`` and ``player_status`` (the latter as
+    CURRENTSONGPOS / CURRENTFILENAME). Reproduces the original Phase 1
+    lock-discipline path -- now expressed against production code."""
+    MPDStateStore = state_store_module.MPDStateStore
+    store = MPDStateStore(str(tmp_state_dir / 'mps.json'))
+    # Point current_folder_status at a real entry so the in-place merge
+    # has somewhere to write.
+    store.set_current_folder_status('FolderA')
+
+    buffer = {}
+    snapshot = store.apply_poll(
+        new_status={'state': 'play', 'elapsed': '12.0', 'song': '0', 'volume': '50'},
+        new_song={'file': 'a.mp3'},
+        mpd_status_buffer=buffer,
+    )
+    assert snapshot['state'] == 'play'
+    assert snapshot['elapsed'] == '12.0'
+    # Volume must NOT appear in the published snapshot (volume has its
+    # own publisher; the comment in the source explains the rationale).
+    assert 'volume' not in snapshot
+    assert 'volume' not in buffer
+
+    # player_status was updated.
+    assert store.player_status['CURRENTSONGPOS'] == '0'
+    assert store.player_status['CURRENTFILENAME'] == 'a.mp3'
+    # current_folder_status was updated.
+    assert store.current_folder_status['ELAPSED'] == '12.0'
+    assert store.current_folder_status['CURRENTFILENAME'] == 'a.mp3'
+    assert store.current_folder_status['PLAYSTATUS'] == 'play'
+
+
+def test_apply_poll_no_elapsed_still_records_file_metadata(
+    state_store_module, tmp_state_dir,
+):
+    """If MPD returns ``file`` without ``elapsed`` (e.g. right after
+    queue-load), the folder status records file metadata but
+    ``player_status`` is left untouched so we don't blow away a prior
+    valid CURRENTSONGPOS."""
+    MPDStateStore = state_store_module.MPDStateStore
+    store = MPDStateStore(str(tmp_state_dir / 'mps.json'))
+    store.set_current_folder_status('FolderA')
+    store.player_status['CURRENTSONGPOS'] = 'prior'
+    store.player_status['CURRENTFILENAME'] = 'prior.mp3'
+
+    store.apply_poll(
+        new_status={'state': 'stop', 'song': '0'},
+        new_song={'file': 'b.mp3'},
+        mpd_status_buffer={},
+    )
+    assert store.current_folder_status['CURRENTFILENAME'] == 'b.mp3'
+    assert store.current_folder_status['ELAPSED'] == '0.0'  # default
+    # player_status untouched because elapsed was absent.
+    assert store.player_status['CURRENTSONGPOS'] == 'prior'
+    assert store.player_status['CURRENTFILENAME'] == 'prior.mp3'
+
+
+def test_apply_poll_buffer_is_mutated_in_place(state_store_module, tmp_state_dir):
+    """The poll thread keeps a long-lived ``mpd_status`` buffer. The
+    method must mutate that buffer in place (not return a new dict)
+    so the buffer accumulates across cycles for the publish-side."""
+    MPDStateStore = state_store_module.MPDStateStore
+    store = MPDStateStore(str(tmp_state_dir / 'mps.json'))
+    store.set_current_folder_status('FolderA')
+
+    buffer = {'pre_existing': 'value'}
+    store.apply_poll(
+        new_status={'state': 'play', 'elapsed': '1.0', 'song': '0'},
+        new_song={'file': 'a.mp3'},
+        mpd_status_buffer=buffer,
+    )
+    # Prior keys survive (the buffer is updated, not replaced).
+    assert buffer['pre_existing'] == 'value'
+    assert buffer['state'] == 'play'
+    assert buffer['file'] == 'a.mp3'
+
+
+def test_apply_poll_holds_lock_throughout(state_store_module, tmp_state_dir):
+    """A snapshot taken concurrent with apply_poll must reflect either
+    pre- or post-state, never an intermediate. Drives many polls + many
+    saves from threads and asserts the on-disk file is always
+    self-consistent (CURRENTSONGPOS matches CURRENTFILENAME by
+    construction)."""
+    import threading
+    import time
+    MPDStateStore = state_store_module.MPDStateStore
+    store = MPDStateStore(str(tmp_state_dir / 'mps.json'))
+    store.set_current_folder_status('FolderA')
+
+    stop = threading.Event()
+    failures = []
+
+    def poller():
+        i = 0
+        buffer = {}
+        while not stop.is_set():
+            f = f'song{i % 100}.mp3'
+            store.apply_poll(
+                new_status={'state': 'play', 'elapsed': str(i), 'song': str(i)},
+                new_song={'file': f},
+                mpd_status_buffer=buffer,
+            )
+            i += 1
+
+    def snapshotter():
+        while not stop.is_set():
+            with store.state_lock:
+                ps = dict(store.player_status)
+            fname = ps.get('CURRENTFILENAME')
+            spos = ps.get('CURRENTSONGPOS')
+            if fname is not None and spos is not None:
+                expected_file = f'song{int(spos) % 100}.mp3'
+                if fname != expected_file:
+                    failures.append((fname, spos))
+
+    t1 = threading.Thread(target=poller)
+    t2 = threading.Thread(target=poller)
+    s = threading.Thread(target=snapshotter)
+    t1.start()
+    t2.start()
+    s.start()
+    time.sleep(0.4)
+    stop.set()
+    t1.join()
+    t2.join()
+    s.join()
+
+    assert failures == [], f"observed {len(failures)} torn reads, sample: {failures[:3]}"
+
+
 def test_save_snapshot_is_consistent_under_concurrent_mutation(
     state_store_module, tmp_state_dir,
 ):
