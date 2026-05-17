@@ -22,6 +22,7 @@ import jukebox.utils as utils
 import jukebox.cfghandler
 import jukebox.plugs as plugs
 import jukebox.publishing as publishing
+from jukebox.utils.paths import resolve_under_home
 from components.rfid.cardutils import decode_card_command
 from components.rpc_command_alias import cmd_alias_definitions
 
@@ -29,35 +30,6 @@ from components.rpc_command_alias import cmd_alias_definitions
 log = logging.getLogger('jb.cards')
 cfg_cards = jukebox.cfghandler.get_handler('cards')
 cfg_main = jukebox.cfghandler.get_handler('jukebox')
-
-
-def _normalize_legacy_cwd_path(filename: str) -> str:
-    """Strip a leading ``..`` chain from a legacy CWD-relative config path.
-
-    Phase 6 anchored config paths under :envvar:`PHONIEBOX_HOME` (the
-    repo root) but the legacy ``jukebox.default.yaml`` defaults still
-    contain ``../../shared/settings/cards.yaml`` — written when the
-    daemon's CWD was ``src/jukebox/``. Under the new anchoring those
-    strings escape the repo root (``<repo>/../../shared/...``), which
-    on a clean install pointed at a non-existent
-    ``<parent-of-repo>/shared/settings/cards.yaml`` and broke
-    ``cards.finalize``.
-
-    Treat a leading ``..`` chain as legacy CWD-relative and collapse it
-    to a home-relative path. Absolute paths and paths without leading
-    ``..`` pass through unchanged so callers using the new convention
-    keep working.
-    """
-    from pathlib import Path
-    p = Path(filename)
-    if p.is_absolute():
-        return filename
-    parts = list(p.parts)
-    if not parts or parts[0] != '..':
-        return filename
-    while parts and parts[0] == '..':
-        parts.pop(0)
-    return str(Path(*parts)) if parts else '.'
 
 
 def list_cards():
@@ -189,16 +161,16 @@ def save_card_database(filename=None, *, only_if_changed=True):
 
 
 def finalize():
-    # Regression fix (2026-05-17): the YAML default for card_database is
-    # ``../../shared/settings/cards.yaml`` (legacy CWD-relative — written
-    # when the daemon ran with CWD ``src/jukebox/``). Phase 6 anchored
-    # config paths under PHONIEBOX_HOME (the repo root), which left
-    # those legacy strings pointing two levels *above* the repo root.
-    # Strip the leading ``..`` chain so the path stays under the repo
-    # root and matches what ``cfghandler.load_yaml`` ultimately reads.
-    card_database = _normalize_legacy_cwd_path(
+    # Item 3 (Item 5b in project_post_refactor_followups.md):
+    # ``resolve_under_home`` now collapses ``..`` segments after
+    # joining under PHONIEBOX_HOME, so the legacy
+    # ``../../shared/settings/cards.yaml`` default lands at
+    # ``<home>/shared/settings/cards.yaml`` instead of escaping the
+    # repo root. The previous per-plugin ``_normalize_legacy_cwd_path``
+    # helper is gone — see jukebox.utils.paths.resolve_under_home.
+    card_database = str(resolve_under_home(
         cfg_main.getn('rfid', 'card_database')
-    )
+    ))
     load_card_database(card_database)
 
 
