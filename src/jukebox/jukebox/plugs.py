@@ -162,6 +162,8 @@ class _DropLockForBlockingCall:
     def __enter__(self):
         # _release_save returns the saved state to restore later, and
         # fully unwinds the RLock so other threads can acquire.
+        # NOTE: _release_save/_acquire_restore are CPython-internal. If a future
+        # CPython removes them, switch to manual recursion-count tracking.
         self._saved_state = _lock_module._release_save()  # type: ignore[attr-defined]
         return self
 
