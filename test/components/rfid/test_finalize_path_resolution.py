@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -79,6 +78,7 @@ def _load_helper(module_qualname: str, file_path: Path):
         # Support both @decorator and @decorator(...) forms.
         if len(args) == 1 and callable(args[0]) and not kwargs:
             return args[0]
+
         def wrap(fn):
             return fn
         return wrap
