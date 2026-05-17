@@ -92,7 +92,22 @@ def mock_sp_client():
 
 @pytest.fixture
 def mock_content_resolver():
-    """Mock content resolver"""
+    """Mock content resolver.
+
+    ``play_content`` calls ``_normalize_uri`` (pass-through) and
+    ``_parse_uri`` (returns ``(content_type, content_id)``) before
+    deciding whether to call ``resolve_uri``. The mock must supply
+    realistic return values for both so tuple-unpacking doesn't blow
+    up. ``_parse_uri`` extracts the second segment of a
+    ``spotify:<type>:<id>`` URI as the content_type, matching the real
+    implementation closely enough for these unit tests.
+    """
+    def _fake_parse_uri(uri):
+        parts = uri.split(':')
+        if len(parts) >= 3:
+            return parts[1], parts[2]
+        return 'playlist', 'unknown'
+
     with patch('components.playerspotify.SpotifyContentResolver') as mock_resolver:
         resolver_instance = MagicMock()
         resolver_instance.resolve_uri.return_value = [
@@ -100,6 +115,8 @@ def mock_content_resolver():
             'spotify:track:track2',
             'spotify:track:track3'
         ]
+        resolver_instance._normalize_uri.side_effect = lambda uri: uri
+        resolver_instance._parse_uri.side_effect = _fake_parse_uri
         mock_resolver.return_value = resolver_instance
         yield resolver_instance
 
