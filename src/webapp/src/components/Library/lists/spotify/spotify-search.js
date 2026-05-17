@@ -63,16 +63,16 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
     setSearchPerformed(true);
 
     try {
-      const { result, error: searchError } = await request('spotifySearch', {
+      // Phase 5a FU#1: request() throws on failure; the renamed
+      // ``searchError`` was always undefined. The catch block is the
+      // canonical error path.
+      const { result } = await request('spotifySearch', {
         query: query.trim(),
         content_type: 'playlist,album,track,show',
         limit: 10,
       });
 
-      if (searchError) {
-        setError(searchError);
-        setSearchResults([]);
-      } else if (result && result.items) {
+      if (result && result.items) {
         setSearchResults(result.items);
       }
     } catch (err) {

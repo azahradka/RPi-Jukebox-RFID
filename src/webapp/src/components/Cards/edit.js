@@ -17,7 +17,10 @@ const CardsEdit = () => {
   useEffect(() => {
     const loadCardList = async () => {
       if (cardId) {
-        const { result, error } = await request('cardsList');
+        // Phase 5a FU#1: request() throws on failure (Phase 1).
+        // Let the App.js error boundary surface failures; no local
+        // ``error`` branch is needed.
+        const { result } = await request('cardsList');
 
         if (result && result[cardId]) {
           const {
@@ -29,10 +32,6 @@ const CardsEdit = () => {
           const actionData = buildActionData(action, command, args);
 
           setActionData(actionData);
-        }
-
-        if (error) {
-          console.error(error);
         }
       }
     }

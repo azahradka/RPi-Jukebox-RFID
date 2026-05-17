@@ -37,7 +37,16 @@
     "extends": [
       "react-app",
       "react-app/jest"
-    ]
+    ],
+    "rules": {
+      "no-restricted-syntax": [
+        "warn",
+        {
+          "selector": "VariableDeclarator[init.type='AwaitExpression'][init.argument.callee.name='request'] > ObjectPattern:has(Property[key.name='error'])",
+          "message": "Phase 5a FU#1: ``request()`` throws on failure (Phase 1 made the contract explicit); the legacy ``const { result, error } = await request(...)`` shape is dead. Use ``const { result } = await request(...)`` + try/catch, or opt into the legacy shape explicitly with ``await request(name, kwargs, { swallow: true })``."
+        }
+      ]
+    }
   },
   "browserslist": {
     "production": [
