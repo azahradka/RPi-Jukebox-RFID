@@ -644,8 +644,8 @@ def parse_config() -> List[PulseAudioSinkClass]:
     return sink_list
 
 
-@plugin.initialize
 def initialize():
+    """Build the pulse monitor/control objects. Registered via :func:`init_plugin`."""
     global pulse_control
     global pulse_monitor
     pulse_monitor = PulseMonitor()
@@ -655,8 +655,11 @@ def initialize():
     pulse_control = PulseVolumeControl(parse_config())
 
 
-@plugin.finalize
 def finalize():
+    """Set default output / startup volume and publish the control instance.
+
+    Registered via :func:`init_plugin`.
+    """
     global pulse_control
     # Set default output and start-up volume
     # Note: PulseAudio may switch the sink automatically to a connecting bluetooth device depending on the loaded module
@@ -673,8 +676,15 @@ def finalize():
     plugin.register(pulse_control, package="volume", name="ctrl", replace=True)
 
 
-@plugin.atexit
 def atexit(**ignored_kwargs):
+    """Stop the pulse monitor at program exit. Registered via :func:`init_plugin`."""
     global pulse_monitor
     pulse_monitor.stop()
     return pulse_monitor
+
+
+def init_plugin():
+    """Apply the plugs initialize/finalize/atexit decorators (Item 3)."""
+    plugin.initialize(initialize)
+    plugin.finalize(finalize)
+    plugin.atexit(atexit)
