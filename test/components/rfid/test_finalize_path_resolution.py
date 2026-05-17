@@ -53,7 +53,31 @@ _JUKEBOX_SRC = _REPO_ROOT / 'src' / 'jukebox'
 if str(_JUKEBOX_SRC) not in sys.path:
     sys.path.insert(0, str(_JUKEBOX_SRC))
 
-from jukebox.utils.paths import resolve_under_home  # noqa: E402
+
+def _load_paths_module():
+    """Import ``jukebox.utils.paths`` defensively.
+
+    Earlier-running tests under ``test/components/playerpodcast`` and
+    ``test/components/playerspotify`` install a stub ``ModuleType``
+    for ``jukebox.utils`` in ``sys.modules`` — that breaks
+    ``from jukebox.utils.paths import ...`` because the stub is not
+    a package. Detect and recover by loading ``paths.py`` directly
+    via ``spec_from_file_location`` under a non-canonical name.
+    """
+    try:
+        from jukebox.utils.paths import resolve_under_home as _r
+        return _r
+    except (ModuleNotFoundError, ImportError):
+        spec = importlib.util.spec_from_file_location(
+            '_test_paths_for_rfid_finalize',
+            _JUKEBOX_SRC / 'jukebox' / 'utils' / 'paths.py',
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.resolve_under_home
+
+
+resolve_under_home = _load_paths_module()
 
 
 def _load_helper(module_qualname: str, file_path: Path):
