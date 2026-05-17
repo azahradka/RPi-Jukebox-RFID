@@ -3,6 +3,14 @@ import { useCallback, useEffect, useState } from 'react';
 import request from '../utils/request';
 
 /**
+ * Maximum time (ms) the hook waits in ``awaiting-paste`` before assuming the
+ * user closed the Spotify popup without completing the paste. Exposed as a
+ * named export so tests can reference the exact value rather than re-deriving
+ * it (and as documentation for the recovery window the UI implicitly grants).
+ */
+export const AWAITING_PASTE_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
  * State machine driving the Spotify OAuth + credentials flow.
  *
  * Phase 5b extracts the previously inline state machine from
@@ -32,6 +40,12 @@ import request from '../utils/request';
  *   beginConnect           -> fetch auth URL, open tab, -> awaiting-paste.
  *   submitPastedCode       -> submitting; result -> authenticated | (back to awaiting-paste)+error.
  *   cancelPaste            -> idle; clears pasted value + error.
+ *   (timeout)              -> after ``AWAITING_PASTE_TIMEOUT_MS`` in
+ *                              ``awaiting-paste``, the hook auto-returns to
+ *                              ``idle`` with ``error = 'paste-timeout'`` so
+ *                              users who closed the Spotify popup without
+ *                              pasting are not stranded with no exit other
+ *                              than ``cancelPaste``.
  *   disconnect             -> unauthenticated + idle.
  *   saveConfig             -> writes credentials; success -> unauthenticated; failure -> error preserved.
  *
@@ -120,6 +134,23 @@ const useSpotifyAuth = ({
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spotifyCode]);
+
+  // Auto-recover from a stuck ``awaiting-paste`` state: if the user closes
+  // the Spotify popup without pasting the callback URL there is otherwise
+  // no exit besides explicitly clicking Cancel. After
+  // ``AWAITING_PASTE_TIMEOUT_MS`` we flip back to ``idle`` and surface
+  // ``error = 'paste-timeout'`` so the UI can prompt for a retry.
+  //
+  // Reversion check: removing this effect causes
+  // ``awaiting-paste auto-recovers after AWAITING_PASTE_TIMEOUT_MS`` to fail.
+  useEffect(() => {
+    if (connectState !== 'awaiting-paste') return undefined;
+    const handle = setTimeout(() => {
+      setConnectState('idle');
+      setError('paste-timeout');
+    }, AWAITING_PASTE_TIMEOUT_MS);
+    return () => clearTimeout(handle);
+  }, [connectState]);
 
   const beginConnect = useCallback(async () => {
     setError('');
