@@ -75,6 +75,19 @@ const initSockets = ({ setState, events }) => {
 
 export const DEFAULT_TIMEOUT_MS = 5000;
 
+/**
+ * Phase 5b reviewer ask #3: bound the request queue.
+ *
+ * Without a cap, a stuck backend (or a thundering herd of requests
+ * during the disconnect gap) grows the queue without bound — that's
+ * unbounded memory plus eventual UI deadlock. 64 is generous: it's
+ * roughly an order of magnitude more than the steady-state burst we
+ * see when the dashboard mounts (volume + status + cards + spotify +
+ * etc.) and small enough to surface a backpressure error to callers
+ * quickly when something is wrong.
+ */
+export const MAX_QUEUE_LENGTH = 64;
+
 // Lazily-initialised module-scope state. Constructed on first call so
 // tests that mock the ``../sockets`` module before any consumer imports
 // never instantiate jszmq at all.
@@ -200,6 +213,16 @@ const socketRequest = (_package, plugin, method, kwargs, options) => {
   const state = _initState();
   const timeoutMs = (options && options.timeoutMs) || DEFAULT_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
+    // Phase 5b reviewer ask #3: bound the queue. We count the active
+    // slot toward the cap so a wedged in-flight request cannot also
+    // hide MAX_QUEUE_LENGTH queued requests on top.
+    const inFlight = state.queue.length + (state.active ? 1 : 0);
+    if (inFlight >= MAX_QUEUE_LENGTH) {
+      reject(new Error(
+        `socket request queue full (max ${MAX_QUEUE_LENGTH} in-flight requests)`
+      ));
+      return;
+    }
     const id = uuidv4();
     const payload = preparePayload(id, _package, plugin, method, kwargs);
     const slot = {

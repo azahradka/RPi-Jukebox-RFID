@@ -205,6 +205,32 @@ describe('socket error handling', () => {
   });
 });
 
+describe('queue cap (ask #3)', () => {
+  it('rejects synchronously when the queue is full', async () => {
+    // Phase 5b reviewer ask #3: an unbounded queue paired badly with
+    // the disconnect gap. Cap is MAX_QUEUE_LENGTH (64); the 65th
+    // request rejects immediately with a clear message.
+    //
+    // Reversion check: delete the ``inFlight >= MAX_QUEUE_LENGTH``
+    // guard in ``socketRequest`` and the 65th call resolves/queues
+    // instead of rejecting, breaking the final assertion.
+    expect(sockets.MAX_QUEUE_LENGTH).toBe(64);
+
+    // Fire MAX_QUEUE_LENGTH requests with no replies — 1 active + 63
+    // queued = 64 slots occupied.
+    for (let i = 0; i < sockets.MAX_QUEUE_LENGTH; i += 1) {
+      // Attach a catch so unsettled rejections at teardown don't pollute
+      // the test output.
+      const p = sockets.socketRequest('p', 'pl', 'm', { i });
+      p.catch(() => {});
+    }
+
+    // The next call must reject *synchronously* (no reply needed).
+    await expect(sockets.socketRequest('p', 'pl', 'm', { overflow: true }))
+      .rejects.toThrow(/queue full/i);
+  });
+});
+
 // Ensure encodeMessage is still wire-compatible (sanity check).
 describe('encodeMessage', () => {
   it('returns a parseable JSON string', () => {
