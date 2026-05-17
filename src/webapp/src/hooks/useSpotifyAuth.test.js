@@ -12,6 +12,9 @@
  *     ``URL-driven OAuth completion notifies the caller for cleanup`` fails.
  *   - Remove ``setAuthStatus('unauthenticated')`` from the failure branch:
  *     ``submitPastedCode returns to awaiting-paste on backend failure`` fails.
+ *   - Remove the ``awaiting-paste`` timeout effect:
+ *     ``awaiting-paste auto-recovers after AWAITING_PASTE_TIMEOUT_MS`` fails
+ *     (state stays in ``awaiting-paste`` past the 5-minute mark).
  */
 
 import React, { useImperativeHandle, forwardRef } from 'react';
@@ -25,7 +28,9 @@ import {
 
 jest.mock('../sockets', () => require('../test-utils/mockSocket'));
 
-const useSpotifyAuth = require('./useSpotifyAuth').default;
+const useSpotifyAuthModule = require('./useSpotifyAuth');
+const useSpotifyAuth = useSpotifyAuthModule.default;
+const { AWAITING_PASTE_TIMEOUT_MS } = useSpotifyAuthModule;
 
 const extractCode = (input) => {
   if (!input) return null;
@@ -236,5 +241,108 @@ describe('useSpotifyAuth — disconnect + saveConfig', () => {
     expect(res).toEqual({ ok: true });
     expect(ref.current.authStatus).toBe('unauthenticated');
     expect(ref.current.successMsg).toBe('save-config-success');
+  });
+});
+
+describe('useSpotifyAuth — awaiting-paste timeout', () => {
+  beforeEach(() => {
+    __resetMockSocket();
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    // Drain any pending timers, then hand control back to real timers so
+    // subsequent suites (and Jest internals) are not poisoned.
+    act(() => { jest.runOnlyPendingTimers(); });
+    jest.useRealTimers();
+  });
+
+  // Helper: drive the hook to ``awaiting-paste`` using real production
+  // transitions — never a parallel-implementation harness (phase 3a pattern).
+  const driveToAwaitingPaste = async (ref) => {
+    let url;
+    await act(async () => {
+      url = await ref.current.beginConnect();
+    });
+    expect(url).toBe('https://accounts.spotify.com/authorize?x=1');
+    expect(ref.current.connectState).toBe('awaiting-paste');
+  };
+
+  it('exposes a 5-minute timeout constant', () => {
+    expect(AWAITING_PASTE_TIMEOUT_MS).toBe(5 * 60 * 1000);
+  });
+
+  it('awaiting-paste auto-recovers after AWAITING_PASTE_TIMEOUT_MS', async () => {
+    __setMockResponse('player_spotify.ctrl.get_auth_status', { configured: true });
+    __setMockResponse('player_spotify.ctrl.get_auth_url', {
+      auth_url: 'https://accounts.spotify.com/authorize?x=1',
+    });
+    const { ref } = mount();
+    await waitFor(() => expect(ref.current.authStatus).toBe('unauthenticated'));
+    await driveToAwaitingPaste(ref);
+
+    act(() => { jest.advanceTimersByTime(AWAITING_PASTE_TIMEOUT_MS); });
+
+    expect(ref.current.connectState).toBe('idle');
+    expect(ref.current.error).toBe('paste-timeout');
+    // Session was never authenticated — the popup was closed without paste.
+    expect(ref.current.authStatus).toBe('unauthenticated');
+  });
+
+  it('does not fire the timeout before AWAITING_PASTE_TIMEOUT_MS elapses', async () => {
+    __setMockResponse('player_spotify.ctrl.get_auth_status', { configured: true });
+    __setMockResponse('player_spotify.ctrl.get_auth_url', {
+      auth_url: 'https://accounts.spotify.com/authorize?x=1',
+    });
+    const { ref } = mount();
+    await waitFor(() => expect(ref.current.authStatus).toBe('unauthenticated'));
+    await driveToAwaitingPaste(ref);
+
+    act(() => { jest.advanceTimersByTime(AWAITING_PASTE_TIMEOUT_MS - 1000); });
+
+    expect(ref.current.connectState).toBe('awaiting-paste');
+    expect(ref.current.error).toBe('');
+  });
+
+  it('cancelPaste before the timeout cancels the pending timer', async () => {
+    __setMockResponse('player_spotify.ctrl.get_auth_status', { configured: true });
+    __setMockResponse('player_spotify.ctrl.get_auth_url', {
+      auth_url: 'https://accounts.spotify.com/authorize?x=1',
+    });
+    const { ref } = mount();
+    await waitFor(() => expect(ref.current.authStatus).toBe('unauthenticated'));
+    await driveToAwaitingPaste(ref);
+
+    act(() => { ref.current.cancelPaste(); });
+    expect(ref.current.connectState).toBe('idle');
+    expect(ref.current.error).toBe('');
+
+    // Advance past the original timeout — the cancelled timer must not flip
+    // the (now-stale) ``idle`` state into a ``paste-timeout`` error.
+    act(() => { jest.advanceTimersByTime(AWAITING_PASTE_TIMEOUT_MS + 1000); });
+    expect(ref.current.connectState).toBe('idle');
+    expect(ref.current.error).toBe('');
+  });
+
+  it('successful submitPastedCode cancels the pending timer', async () => {
+    __setMockResponse('player_spotify.ctrl.get_auth_status', { configured: true });
+    __setMockResponse('player_spotify.ctrl.get_auth_url', {
+      auth_url: 'https://accounts.spotify.com/authorize?x=1',
+    });
+    __setMockResponse('player_spotify.ctrl.authenticate', { success: true });
+    const { ref } = mount();
+    await waitFor(() => expect(ref.current.authStatus).toBe('unauthenticated'));
+    await driveToAwaitingPaste(ref);
+
+    await act(async () => {
+      await ref.current.submitPastedCode('ABCDEF');
+    });
+    expect(ref.current.authStatus).toBe('authenticated');
+
+    // The timer would otherwise fire and clobber ``error`` with
+    // ``'paste-timeout'``. After cleanup it must not.
+    act(() => { jest.advanceTimersByTime(AWAITING_PASTE_TIMEOUT_MS + 1000); });
+    expect(ref.current.authStatus).toBe('authenticated');
+    expect(ref.current.error).toBe('');
   });
 });
