@@ -80,6 +80,13 @@ jobs:
         # adding paths / plug_schema / readerbase heartbeat / jingle
         # lock-release / cfghandler getn / BackoffPolicy tests;
         # ~3% headroom).
+        # Item 3 stays at 53%: local macOS measured 53.72% after adding
+        # init_plugin convention tests + resolve_under_home regression
+        # coverage and removing the per-plugin path-normalisation
+        # helpers. Net change small because the test counts that the
+        # refactor added (~5 unit tests for init_plugin, 2 for paths)
+        # were offset by deleting test_finalize_path_resolution.py
+        # (~8 tests for now-obsolete per-plugin helpers).
         # Subsequent phases ratchet up as they add tests.
         COVERAGE_FAIL_UNDER: '53'
       run: |

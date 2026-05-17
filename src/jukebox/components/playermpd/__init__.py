@@ -144,6 +144,10 @@ plugs_config_schema = {
     'status_file': str,
     'music_library_path': str,
     'second_swipe_action': dict,
+    # ``library.update_on_startup`` / ``library.check_user_rights`` are
+    # the two flags consulted in :func:`initialize`. The schema names
+    # the top-level subdict; the nested keys ride along.
+    'library': dict,
 }
 
 
@@ -974,8 +978,14 @@ player_ctrl: PlayerMPD
 play_card_callbacks: PlayContentCallbacks[PlayCardState]
 
 
-@plugs.initialize
 def initialize():
+    """Construct :class:`PlayerMPD` and register it as ``ctrl``.
+
+    Item 3 (plug-time-coupling refactor): the ``@plugs.initialize``
+    decorator now lives inside :func:`init_plugin` so this module's
+    top level performs no plugs registrations on import. Behaviour is
+    unchanged from the previous module-level decorated version.
+    """
     global player_ctrl
     player_ctrl = PlayerMPD()
     plugs.register(player_ctrl, name='ctrl')
@@ -1006,7 +1016,22 @@ def initialize():
             misc.recursive_chmod(music_library_path, mode_files=0o666, mode_dirs=0o777)
 
 
-@plugs.atexit
 def atexit(**ignored_kwargs):
+    """Shut the player down at program exit.
+
+    Same decorator-registration story as :func:`initialize`.
+    """
     global player_ctrl
     return player_ctrl.exit()
+
+
+def init_plugin():
+    """Apply the ``@plugs.initialize`` / ``@plugs.atexit`` decorators.
+
+    Item 3: registrations happen here (called by ``plugs.load`` after
+    schema validation) instead of at module-import time. This lets
+    test fixtures / tooling import the module without booting the
+    plugin registry.
+    """
+    plugs.initialize(initialize)
+    plugs.atexit(atexit)

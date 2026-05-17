@@ -319,7 +319,15 @@ def _register_obj(plugin: Any,
                            f"Did you wrongly use import {plugin_origin}?")
 
     if inspect.isfunction(plugin):
-        if plugin.__qualname__ != plugin.__name__:
+        # Reject unbound class methods (``Class.method`` qualname) but
+        # accept top-level functions AND functions nested inside other
+        # functions. Item 3 migrates plugin registrations into a
+        # top-level ``init_plugin()`` body, which turns previously
+        # module-level functions into ``init_plugin.<locals>.func`` —
+        # the previous strict equality check refused those.
+        # ``<locals>`` appears in ``__qualname__`` only for closures /
+        # nested functions, never for methods.
+        if plugin.__qualname__ != plugin.__name__ and '<locals>' not in plugin.__qualname__:
             raise TypeError(f"Registering of unbound methods not allowed! Offending method: '{plugin.__qualname__}'")
         name = name or plugin.__name__
         logger.debug(f"Enlisting function '{plugin_origin}.{plugin.__name__}' as '{package}.{name}' ({type(plugin)})")
@@ -482,7 +490,12 @@ def register(plugin: Optional[Callable] = None, *,
             return inner_function
         if inspect.isclass(plugin):
             # Case B: 1-level decorator around a class
-            return _register_class(cast(Type, plugin), auto_tag=False)
+            # Item 3: thread ``auto_tag`` through for callers that pass
+            # the class positionally — ``plugs.register(cls, auto_tag=True)``
+            # is the function-call form of ``@plugs.register(auto_tag=True)``
+            # and the two should produce the same decorated class. The
+            # previous hardcoded ``False`` made the form unusable.
+            return _register_class(cast(Type, plugin), auto_tag=auto_tag)
         else:
             # Everything else: throw it at object registration
             # Case C.1: Used as 1-level decorator on a function
@@ -586,6 +599,26 @@ def load(package: str, load_as: Optional[str] = None, prefix: Optional[str] = No
     the initializer chain so misconfiguration surfaces structurally
     instead of as a ``KeyError`` deep in the initializer.
 
+    Item 3 (plug-time-coupling refactor): if the imported module
+    exposes a top-level callable named ``init_plugin``, it is invoked
+    here after schema validation and before the
+    ``@plugs.initialize``-decorated callbacks run. The convention lets
+    a plugin keep its module body purely declarative (imports,
+    classes, functions) and perform all
+    ``@plugs.register`` / ``@plugs.initialize`` / ``@plugs.finalize``
+    / ``@plugs.atexit`` registrations inside ``init_plugin()``. Module-
+    level decorators continue to work for plugins that haven't migrated
+    (back-compat); the two paths are not mutually exclusive but mixing
+    them within a single plugin offers no advantage.
+
+    The decorator-running order matters: ``@plugs.initialize`` /
+    ``@plugs.finalize`` / ``@plugs.atexit`` append to the per-package
+    ``initializer`` / ``finalizer`` / ``atexit`` lists, and those
+    lists are consulted immediately after ``init_plugin()`` returns
+    (for ``initializer``) or later for the others. Registering inside
+    ``init_plugin`` thus produces the same call sequence as the legacy
+    module-body path.
+
     :param package: Python package to load as plugin package
     :param load_as: Plugin package registration name. If None the name is the python's package simple name
     :param prefix: Prefix to python package to create fully qualified name. This is used only to locate the python package
@@ -629,6 +662,13 @@ def load(package: str, load_as: Optional[str] = None, prefix: Optional[str] = No
         logger.error(f"Plugin '{load_as}' config schema validation failed: {e}")
         raise
 
+    # Item 3: invoke optional init_plugin() hook. This is where the
+    # plugin's registrations happen for migrated plugins. Plugins that
+    # still register at module-import time fall through with no
+    # init_plugin attribute and rely on the decorators having already
+    # run during importlib.import_module above.
+    _maybe_run_init_plugin(load_as, package)
+
     for func in _PLUGINS[load_as].initializer:
         logger.debug(f"Package load initializer: calling {load_as}.{func.__name__}()")
         try:
@@ -636,6 +676,32 @@ def load(package: str, load_as: Optional[str] = None, prefix: Optional[str] = No
         except Exception as e:
             _PLUGINS_FAILED[load_as] = PluginPackageClass(package)
             raise e
+
+
+def _maybe_run_init_plugin(load_as: str, package: str) -> None:
+    """Call ``module.init_plugin()`` if the plugin defines it.
+
+    Item 3 hook into the plugin loader: a migrated plugin exposes a
+    top-level ``init_plugin`` callable that performs all its
+    ``@plugs.register`` / ``@plugs.initialize`` / ``@plugs.finalize``
+    / ``@plugs.atexit`` registrations. Plugins without the hook still
+    work via the legacy module-import-time decorator path; this is
+    a no-op for them.
+
+    On failure the plugin is marked failed in :data:`_PLUGINS_FAILED`
+    and the exception re-raised; :func:`load` does not need to repeat
+    that bookkeeping.
+    """
+    init_plugin_hook = getattr(_PLUGINS[load_as].module, 'init_plugin', None)
+    if not callable(init_plugin_hook):
+        return
+    logger.debug(f"Package load init_plugin: calling {load_as}.init_plugin()")
+    try:
+        init_plugin_hook()
+    except Exception as e:
+        _PLUGINS_FAILED[load_as] = PluginPackageClass(package)
+        logger.error(f"Plugin '{load_as}' init_plugin() raised: {e}")
+        raise
 
 
 def _validate_plugin_config(load_as: str) -> None:

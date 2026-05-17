@@ -120,3 +120,38 @@ def test_resolve_under_home_returns_pathlib_path(monkeypatch, tmp_path):
     monkeypatch.setenv(paths_mod.PHONIEBOX_HOME_ENV, str(tmp_path))
     result = paths_mod.resolve_under_home('foo.yaml')
     assert isinstance(result, Path)
+
+
+def test_resolve_under_home_collapses_dotdot(monkeypatch, tmp_path):
+    """Leading ``..`` chains in relative paths collapse against home.
+
+    Item 3 (Item 5b in project_post_refactor_followups.md): the
+    legacy ``../../shared/settings/cards.yaml`` default (written when
+    the daemon's cwd was ``src/jukebox/``) used to escape PHONIEBOX_HOME
+    by two levels. Per-plugin ``_normalize_legacy_cwd_path`` helpers
+    stripped the chain; now :func:`resolve_under_home` does it
+    centrally via ``.resolve()``.
+
+    Reversion check: remove the ``.resolve()`` from
+    ``resolve_under_home`` and this test fails — the joined path
+    keeps the ``..`` segments and ends up above ``tmp_path``.
+    """
+    monkeypatch.setenv(paths_mod.PHONIEBOX_HOME_ENV, str(tmp_path))
+    result = paths_mod.resolve_under_home('../../shared/settings/cards.yaml')
+    # The result must be under home (the resolved tmp_path), not escape it.
+    home = tmp_path.resolve()
+    assert str(result).startswith(str(home)), (
+        f"expected path under {home}, got {result}"
+    )
+    # And the final tail should be the original logical path.
+    assert result.name == 'cards.yaml'
+
+
+def test_resolve_under_home_collapses_interior_dotdot(monkeypatch, tmp_path):
+    """``..`` segments anywhere in the relative path collapse, not
+    just leading ones. Mirrors what ``Path.resolve()`` does for an
+    absolute path."""
+    monkeypatch.setenv(paths_mod.PHONIEBOX_HOME_ENV, str(tmp_path))
+    result = paths_mod.resolve_under_home('shared/../shared/settings/cards.yaml')
+    expected = tmp_path.resolve() / 'shared' / 'settings' / 'cards.yaml'
+    assert result == expected

@@ -43,7 +43,6 @@ _SUPPORTED_TYPES = [_TYPE_BUTTON]
 _SUPPORTED_ACTIONS = {_TYPE_BUTTON: _ACTION_ON_PRESS}
 
 
-@plugin.register
 def activate(
     device_name: str,
     button_callbacks: dict[int, Callable],
@@ -96,7 +95,6 @@ def activate(
     new_listener.start()
 
 
-@plugin.initialize
 def initialize():
     """Initialize event device button listener from config
 
@@ -213,9 +211,15 @@ def _input_devices_to_key_mapping(input_devices: dict) -> dict:
     return mapping
 
 
-@plugin.atexit
 def atexit(**ignored_kwargs):
     global listener
     for ll in listener:
         ll.stop()
     return listener
+
+
+def init_plugin():
+    """Register event-device callable + lifecycle hooks (Item 3)."""
+    plugin.register(activate)
+    plugin.initialize(initialize)
+    plugin.atexit(atexit)

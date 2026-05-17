@@ -16,7 +16,6 @@ cfg = jukebox.cfghandler.get_handler('jukebox')
 # Jingle Service for WAVE by ALSA
 # ---------------------------------------------------------------------------
 
-@plugin.register
 class AlsaWave:
     """Jingle Service for playing wave files directly from Python through ALSA"""
     fmt_lookup = {1: alsaaudio.PCM_FORMAT_U8,
@@ -77,7 +76,22 @@ class AlsaWaveBuilder:
 # Plugin Initializer / Finalizer
 # ---------------------------------------------------------------------------
 
-@plugin.initialize
 def initialize():
     jingle = plugin.get('jingle')
     jingle.factory.register("wav", AlsaWaveBuilder())
+
+
+def init_plugin():
+    """Decorate :class:`AlsaWave` and register the initialize hook.
+
+    Item 3: the class-level ``@plugin.register`` decorator needed
+    ``_PACKAGE_MAP`` populated, which forced this module to be
+    imported only through ``plugs.load``. Rebinding the module-level
+    name to the decorated class here keeps the AlsaWaveBuilder code
+    (which calls ``AlsaWave(plugin_name=..., plugin_register=True)``)
+    working, while the module body remains side-effect-free on plain
+    import.
+    """
+    global AlsaWave
+    AlsaWave = plugin.register(AlsaWave)
+    plugin.initialize(initialize)

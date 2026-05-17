@@ -40,7 +40,9 @@ Reference the meta-plan; do not re-derive scope. End-of-phase: open PR, update `
 | 5b | UI monolith breakups + socket pooling | done 2026-05-17 | [#12](https://github.com/azahradka/RPi-Jukebox-RFID/pull/12) |
 | 6 | Core framework polish (plugs/daemon/cfg validation) | done 2026-05-17 | [#9](https://github.com/azahradka/RPi-Jukebox-RFID/pull/9) |
 | 7 | Dev workflow (auto-sync, local smoke harness) | done 2026-05-17 | [#11](https://github.com/azahradka/RPi-Jukebox-RFID/pull/11) |
-| polish | Post-refactor polish + 3 RPi-surfaced regressions | in progress | PR open |
+| polish | Post-refactor polish + 3 RPi-surfaced regressions | done 2026-05-17 | [#14](https://github.com/azahradka/RPi-Jukebox-RFID/pull/14) |
+| Item 2 | OAuth popup recovery — 5-minute timer + visible error | done 2026-05-17 | [#13](https://github.com/azahradka/RPi-Jukebox-RFID/pull/13) |
+| Item 3 | Plug-time-coupling refactor + 5b + schema baselines | in progress | PR open |
 
 **Status values:** `not started` → `in progress` → `done YYYY-MM-DD` → `blocked: <reason>`.
 

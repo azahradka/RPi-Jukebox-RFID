@@ -109,17 +109,15 @@ def _extract_schemas(tree: ast.AST) -> Tuple[List[str], Set[str]]:
 _JUKEBOX_CFG_VAR_NAMES = ('cfg', 'cfg_main')
 
 
-#: Pre-existing drift the polish PR was scoped out of fixing (the
-#: plugin __init__.py files belong to Item 3's plug-time-coupling
-#: refactor; touching them risks merge conflicts with that PR).
-#: These (plugin-init-relative-path, key) pairs are REPORTED but
-#: don't fail CI. Remove an entry once the underlying drift is
-#: resolved.
-_BASELINE_DRIFT = frozenset({
-    ('components/playermpd/__init__.py', 'library'),
-    ('components/playerpodcast/__init__.py', 'episode_cache'),
-    ('components/playerpodcast/__init__.py', 'second_swipe_action'),
-})
+#: Item 3 resolved every entry in this allowlist:
+#: ``playermpd.library`` and ``playerpodcast.{episode_cache,
+#: second_swipe_action}`` are now declared in their respective
+#: ``plugs_config_schema``. The set is intentionally kept (rather
+#: than dropping the constant) so a future regression that needs a
+#: temporary baseline can be re-added with minimal churn, and so
+#: ``test/tools/test_check_schema_coverage.py`` continues to
+#: exercise the baseline-vs-new split path.
+_BASELINE_DRIFT: frozenset = frozenset()
 
 
 def _extract_cfg_keys(tree: ast.AST, sections: Iterable[str]) -> Set[str]:

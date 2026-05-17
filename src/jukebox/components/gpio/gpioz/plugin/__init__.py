@@ -240,7 +240,6 @@ def get_output(name: str):
     return output_devices[name]
 
 
-@plugin.register
 def on(name: str):
     """Turn an output device on
 
@@ -249,7 +248,6 @@ def on(name: str):
     get_output(name).on()
 
 
-@plugin.register
 def off(name: str):
     """Turn an output device off
 
@@ -258,7 +256,6 @@ def off(name: str):
     get_output(name).off()
 
 
-@plugin.register
 def set_value(name: str, value: Any):
     """Set the output device to :attr:`value`
 
@@ -269,7 +266,6 @@ def set_value(name: str, value: Any):
     get_output(name).value = value
 
 
-@plugin.register
 def flash(name, on_time=1, off_time=1, n=1, *, fade_in_time=0, fade_out_time=0, tone=None, color=(1, 1, 1)):
     """Flash (blink or beep) an output device
 
@@ -314,7 +310,6 @@ def flash(name, on_time=1, off_time=1, n=1, *, fade_in_time=0, fade_out_time=0, 
 # Plugin registration
 # ---------------------------------------------------
 
-@plugin.initialize
 def initialize():
     # Boot order:
     # volume.initialize: Config, Start services
@@ -351,7 +346,6 @@ def initialize():
     logger.debug(f'Completed loading and configuring GPIO output devices (IS_MOCKED={IS_MOCKED})')
 
 
-@plugin.finalize
 def finalize():
     # Build input devices last in finalize,
     # such that all modules are loaded and RPC commands can be de-referenced and bound to endpoint methods
@@ -364,7 +358,6 @@ def finalize():
     service_is_running_callbacks.run_callbacks(1)
 
 
-@plugin.atexit
 def plugin_atexit(**ignored_kwargs):
     # GPIOZ is one first module to close down: update operational status
     service_is_running_callbacks.run_callbacks(0)
@@ -376,3 +369,14 @@ def plugin_atexit(**ignored_kwargs):
         d.close()
     for n, d in input_devices.items():
         d.close()
+
+
+def init_plugin():
+    """Register GPIOZ callables and lifecycle hooks (Item 3)."""
+    plugin.register(on)
+    plugin.register(off)
+    plugin.register(set_value)
+    plugin.register(flash)
+    plugin.initialize(initialize)
+    plugin.finalize(finalize)
+    plugin.atexit(plugin_atexit)

@@ -85,6 +85,11 @@ plugs_config_schema = {
             'timeout': int,
         },
     },
+    # Item 3: previously baselined-drift keys. Both are consulted by
+    # PlayerPodcast.__init__ via cfg.getn(...) and have valid YAML
+    # defaults — they were just missing from the schema declaration.
+    'episode_cache': dict,
+    'second_swipe_action': dict,
 }
 
 
@@ -1288,9 +1293,13 @@ class PlayerPodcast:
 player_ctrl = None
 
 
-@plugs.initialize
 def initialize():
-    """Initialize Podcast player plugin"""
+    """Initialize Podcast player plugin.
+
+    Item 3: the ``@plugs.initialize`` decorator is applied inside
+    :func:`init_plugin` rather than at module body so importing this
+    module has no plugs side effects.
+    """
     global player_ctrl
     player_ctrl = PlayerPodcast()
     plugs.register(player_ctrl, name='ctrl')
@@ -1309,9 +1318,14 @@ def initialize():
     logger.info("Podcast player plugin registered as 'playerpodcast.ctrl'")
 
 
-@plugs.atexit
 def atexit(**ignored_kwargs):
-    """Cleanup on exit"""
+    """Cleanup on exit. Registered via :func:`init_plugin`."""
     global player_ctrl
     if player_ctrl:
         return player_ctrl.exit()
+
+
+def init_plugin():
+    """Register initializer and atexit with plugs (Item 3)."""
+    plugs.initialize(initialize)
+    plugs.atexit(atexit)

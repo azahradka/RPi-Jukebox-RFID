@@ -42,7 +42,6 @@ bt_keycode_prev = 165
 mandatory_keys = {bt_keycode_play}
 
 
-@plugin.register
 def activate(device_name: str, exact: bool = True, open_initial_delay: float = 0.25):
     global listener
     global listener_cnt
@@ -74,7 +73,6 @@ def activate_from_pulse(card_driver: str, device_name: str):
         logger.info(f"Ignoring activation request from non-bluetooth module '{card_driver}'")
 
 
-@plugin.initialize
 def initialize():
     if cfg.setndefault('bluetooth_audio_buttons', 'enable', value=True):
         components.volume.pulse_monitor.on_connect_callbacks.register(activate_from_pulse)
@@ -107,9 +105,15 @@ def initialize():
                     activate(device_name, exact=False, open_initial_delay=0.1)
 
 
-@plugin.atexit
 def atexit(**ignored_kwargs):
     global listener
     for ll in listener:
         ll.stop()
+
+
+def init_plugin():
+    """Register callable + lifecycle hooks (Item 3)."""
+    plugin.register(activate)
+    plugin.initialize(initialize)
+    plugin.atexit(atexit)
     return listener

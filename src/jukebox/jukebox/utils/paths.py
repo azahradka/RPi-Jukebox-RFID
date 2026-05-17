@@ -92,12 +92,33 @@ def resolve_under_home(relative: Union[str, Path]) -> Path:
     """Resolve ``relative`` against the Phoniebox home directory.
 
     If ``relative`` is already absolute, return it unchanged.
-    Otherwise anchor it under :func:`get_phoniebox_home`.
+    Otherwise:
+
+    1. Strip any leading ``..`` chain from the relative path. The
+       legacy ``jukebox.default.yaml`` defaults like
+       ``../../shared/settings/cards.yaml`` were written when the
+       daemon's cwd was ``src/jukebox/``; under Phase 6's
+       PHONIEBOX_HOME anchoring those segments would push the path
+       above the repo root, which is never what the user intended.
+       Treat any leading ``..`` chain as a legacy CWD-relative
+       marker and collapse it.
+    2. Anchor the remainder under :func:`get_phoniebox_home`.
+    3. Call ``.resolve()`` to fold interior ``..`` segments and
+       normalise the absolute path.
+
+    Item 3 (Item 5b in project_post_refactor_followups.md):
+    consolidates the per-plugin ``_normalize_legacy_cwd_path``
+    helpers that ``cards/__init__.py`` and ``rfid/reader/__init__.py``
+    each carried.
 
     Examples::
 
         resolve_under_home('shared/settings/jukebox.yaml')
         # /home/boxadmin/RPi-Jukebox-RFID/shared/settings/jukebox.yaml
+
+        resolve_under_home('../../shared/settings/cards.yaml')
+        # /home/boxadmin/RPi-Jukebox-RFID/shared/settings/cards.yaml
+        # (the leading ``..`` chain is stripped before joining)
 
         resolve_under_home('/etc/phoniebox/config.yaml')
         # /etc/phoniebox/config.yaml   (unchanged)
@@ -105,4 +126,9 @@ def resolve_under_home(relative: Union[str, Path]) -> Path:
     p = Path(relative).expanduser()
     if p.is_absolute():
         return p
-    return get_phoniebox_home() / p
+    # Strip leading ``..`` chain (legacy CWD-relative marker).
+    parts = list(p.parts)
+    while parts and parts[0] == '..':
+        parts.pop(0)
+    stripped = Path(*parts) if parts else Path('.')
+    return (get_phoniebox_home() / stripped).resolve()

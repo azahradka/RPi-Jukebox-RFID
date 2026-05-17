@@ -201,9 +201,11 @@ def on_connect(client, userdata, flags, rc):
     mqtt.start()
 
 
-@plugs.initialize
 def initialize():
-    """Setup connection and trigger the MQTT loop."""
+    """Setup connection and trigger the MQTT loop.
+
+    Registered via :func:`init_plugin` (Item 3).
+    """
     global mqtt_client
 
     if mqtt_enabled:
@@ -229,8 +231,8 @@ def initialize():
         logger.info("MQTT client is disabled")
 
 
-@plugs.atexit
 def atexit(signal_id: int, **ignored_kwargs):
+    """MQTT cleanup. Registered via :func:`init_plugin`."""
     global mqtt, mqtt_client
     if mqtt_enabled:
         logger.info("Executing atexit handler, stopping MQTT client")
@@ -240,3 +242,9 @@ def atexit(signal_id: int, **ignored_kwargs):
         logger.info("MQTT client stopped and disconnected")
     else:
         logger.info("MQTT client is disabled")
+
+
+def init_plugin():
+    """Register MQTT lifecycle hooks (Item 3)."""
+    plugs.initialize(initialize)
+    plugs.atexit(atexit)

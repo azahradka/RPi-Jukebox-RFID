@@ -52,15 +52,21 @@ class battmon_ads1015(BatteryMonitorBase.BattmonBase):
         return int(batt_voltage_mV_raw * self.scale_to_phy)
 
 
-@plugs.finalize
 def finalize():
+    """Construct the ADS1015 battery monitor. Registered via :func:`init_plugin`."""
     global batt_mon
     cfg = jukebox.cfghandler.get_handler('jukebox')
     batt_mon = battmon_ads1015(cfg)
     plugs.register(batt_mon, name='batt_mon')
 
 
-@plugs.atexit
 def atexit(**ignored_kwargs):
+    """Cancel status thread. Registered via :func:`init_plugin`."""
     global batt_mon
     batt_mon.status_thread.cancel()
+
+
+def init_plugin():
+    """Register lifecycle hooks (Item 3)."""
+    plugs.finalize(finalize)
+    plugs.atexit(atexit)

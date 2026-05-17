@@ -9,6 +9,7 @@ import jukebox.plugs as plugs
 import jukebox.cfghandler
 import jukebox.utils as utils
 import jukebox.publishing as publishing
+from jukebox.utils.paths import resolve_under_home
 from components.rfid.cardutils import (decode_card_command)
 
 from jukebox.callingback import CallbackHandler
@@ -38,27 +39,6 @@ _READERS = {}
 cfg_rfid = jukebox.cfghandler.get_handler('rfid')
 cfg_main = jukebox.cfghandler.get_handler('jukebox')
 cfg_cards = jukebox.cfghandler.get_handler('cards')
-
-
-def _normalize_legacy_cwd_path(filename: str) -> str:
-    """Strip a leading ``..`` chain from a legacy CWD-relative config path.
-
-    See ``components.rfid.cards._normalize_legacy_cwd_path`` for the
-    full background. Phase 6 anchored config paths under
-    :envvar:`PHONIEBOX_HOME` but the legacy ``reader_config`` default
-    in ``jukebox.default.yaml`` (``../../shared/settings/rfid.yaml``)
-    is CWD-relative and escapes the repo root under the new anchoring.
-    """
-    from pathlib import Path
-    p = Path(filename)
-    if p.is_absolute():
-        return filename
-    parts = list(p.parts)
-    if not parts or parts[0] != '..':
-        return filename
-    while parts and parts[0] == '..':
-        parts.pop(0)
-    return str(Path(*parts)) if parts else '.'
 
 
 class RfidCardDetectState(Enum):
@@ -277,16 +257,20 @@ class ReaderRunner(threading.Thread):
         self._logger.debug("Stop listening!")
 
 
-@plugs.finalize
 def finalize():
+    """Load reader config and start ReaderRunner threads.
+
+    Registered via :func:`init_plugin` (Item 3).
+    """
     try:
-        # Regression fix (2026-05-17): collapse legacy CWD-relative
-        # ``../../shared/...`` paths from jukebox.default.yaml so they
-        # resolve under PHONIEBOX_HOME rather than escaping the repo
-        # root. See _normalize_legacy_cwd_path docstring.
-        reader_config_file = _normalize_legacy_cwd_path(
+        # Item 3 (Item 5b in project_post_refactor_followups.md):
+        # ``resolve_under_home`` collapses ``..`` after the join so
+        # the legacy CWD-relative default
+        # ``../../shared/settings/rfid.yaml`` lands inside the repo
+        # root rather than escaping it. See jukebox.utils.paths.
+        reader_config_file = str(resolve_under_home(
             cfg_main.getn('rfid', 'reader_config')
-        )
+        ))
         jukebox.cfghandler.load_yaml(cfg_rfid, reader_config_file)
     except FileNotFoundError:
         cfg_rfid.config_dict({'rfid': {'readers': {}}})
@@ -303,8 +287,8 @@ def finalize():
             _READERS[reader_cfg_key].start()
 
 
-@plugs.atexit
 def atexit(**ignored_kwargs):
+    """Stop ReaderRunner threads. Registered via :func:`init_plugin`."""
     # For all parallel readers, call the stop function
     for reader in _READERS.values():
         reader.stop()
@@ -312,3 +296,9 @@ def atexit(**ignored_kwargs):
     # Probably yes, in case Readers add default values?
     # Changed values of buzzer etc through a later user if?
     return _READERS.values()
+
+
+def init_plugin():
+    """Register the rfid reader plugin's lifecycle hooks (Item 3)."""
+    plugs.finalize(finalize)
+    plugs.atexit(atexit)

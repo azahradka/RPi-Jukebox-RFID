@@ -345,14 +345,20 @@ class SyncRfidcards:
 sync_rfidcards_ctrl: SyncRfidcards
 
 
-@plugs.initialize
 def initialize():
+    """Construct the sync controller. Registered via :func:`init_plugin`."""
     global sync_rfidcards_ctrl
     sync_rfidcards_ctrl = SyncRfidcards()
     plugs.register(sync_rfidcards_ctrl, name='ctrl')
 
 
-@plugs.atexit
 def atexit(**ignored_kwargs):
+    """Shutdown hook. Registered via :func:`init_plugin`."""
     global sync_rfidcards_ctrl
     return sync_rfidcards_ctrl.__exit__()
+
+
+def init_plugin():
+    """Register lifecycle hooks (Item 3)."""
+    plugs.initialize(initialize)
+    plugs.atexit(atexit)
