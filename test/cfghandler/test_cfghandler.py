@@ -92,6 +92,46 @@ def test_ordereddict_mutable():
     assert 'anew2' == cfg.getn('l1', 'key2')
 
 
+def test_load_yaml_resolves_relative_paths_under_home(tmp_path, monkeypatch):
+    """Phase 6: load_yaml anchors relative filenames under PHONIEBOX_HOME.
+
+    Reversion check: remove ``resolve_under_home`` from
+    ``cfghandler.load_yaml`` and this test fails — the relative path
+    is resolved against cwd, not tmp_path.
+    """
+    from jukebox.utils import paths as paths_mod
+    monkeypatch.setenv(paths_mod.PHONIEBOX_HOME_ENV, str(tmp_path))
+    paths_mod.reset_phoniebox_home_cache()
+
+    # Create the YAML file at the anchored relative path
+    rel = 'subdir/cfg.yaml'
+    full = tmp_path / rel
+    full.parent.mkdir(parents=True)
+    full.write_text("a: 1\nb: two\n")
+
+    cfg = cfghandler.ConfigHandler('test_load_yaml_relative')
+    cfghandler.load_yaml(cfg, rel)
+    assert cfg.getn('a') == 1
+    assert cfg.getn('b') == 'two'
+    # loaded_from records the resolved absolute path
+    assert os.path.isabs(cfg.loaded_from)
+    paths_mod.reset_phoniebox_home_cache()
+
+
+def test_load_yaml_absolute_path_unchanged(tmp_path, monkeypatch):
+    """Absolute filenames bypass PHONIEBOX_HOME resolution."""
+    from jukebox.utils import paths as paths_mod
+    monkeypatch.setenv(paths_mod.PHONIEBOX_HOME_ENV, '/some/other/home')
+    paths_mod.reset_phoniebox_home_cache()
+
+    full = tmp_path / 'cfg.yaml'
+    full.write_text("a: 42\n")
+    cfg = cfghandler.ConfigHandler('test_load_yaml_absolute')
+    cfghandler.load_yaml(cfg, str(full))
+    assert cfg.getn('a') == 42
+    paths_mod.reset_phoniebox_home_cache()
+
+
 if __name__ == '__main__':
     test_ordereddict_getn()
     test_ordereddict_setndefault()

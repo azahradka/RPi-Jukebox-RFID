@@ -310,15 +310,27 @@ def load_yaml(cfg: ConfigHandler, filename: str) -> None:
     """
     Load a yaml file into a ConfigHandler
 
+    Phase 6: relative paths are anchored under :envvar:`PHONIEBOX_HOME`
+    (or the auto-detected repo root) via
+    :func:`jukebox.utils.paths.resolve_under_home`, so callers don't
+    need to worry about the current working directory. Absolute paths
+    pass through unchanged. ``cfg.loaded_from`` records the resolved
+    path so :meth:`ConfigHandler.save` writes back to the same place.
+
     :param cfg: ConfigHandler instance
-    :param filename: filename to yaml file
+    :param filename: filename to yaml file (relative paths anchored
+        under ``PHONIEBOX_HOME``)
     :return: None
     """
+    # Import here to break a potential circular import at module load:
+    # paths -> nothing, but cfghandler is imported very early.
+    from jukebox.utils.paths import resolve_under_home
+    resolved = str(resolve_under_home(filename))
     yaml = YAML(typ='rt')
-    logger.info(f"({cfg.name}) Loading yaml file '{filename}'")
+    logger.info(f"({cfg.name}) Loading yaml file '{resolved}'")
     with cfg:
-        cfg.loaded_from = filename
-        with open(filename) as stream:
+        cfg.loaded_from = resolved
+        with open(resolved) as stream:
             cfg.config_dict(yaml.load(stream))
 
 
@@ -336,13 +348,20 @@ def write_yaml(cfg: ConfigHandler, filename: str, only_if_changed: bool = False,
     # Lock cfg first thing, to prevent any changes between write call and actual write-out
     with cfg:
         if cfg.is_modified() or not only_if_changed:
-            logger.info(f"({cfg.name}) Writing yaml file '{filename}'")
+            # Phase 6: resolve relative paths under PHONIEBOX_HOME for
+            # symmetry with load_yaml. sys.stdout passes through.
+            if filename is sys.stdout:
+                resolved = filename
+            else:
+                from jukebox.utils.paths import resolve_under_home
+                resolved = str(resolve_under_home(filename))
+            logger.info(f"({cfg.name}) Writing yaml file '{resolved}'")
             yaml = YAML(typ='rt')
             # The access to "private" _data here is ok, because the lock is acquired
-            if filename is sys.stdout:
+            if resolved is sys.stdout:
                 yaml.dump(cfg._data, sys.stdout, *args, **kwargs)
             else:
-                with open(filename, 'wt') as stream:
+                with open(resolved, 'wt') as stream:
                     yaml.dump(cfg._data, stream, *args, **kwargs)
         else:
             logger.info(f"({cfg.name}) "
