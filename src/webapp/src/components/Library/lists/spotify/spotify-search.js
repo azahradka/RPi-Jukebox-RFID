@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Box,
@@ -17,8 +17,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 
-import request from '../../../../utils/request';
-import useDebounce from '../../../../hooks/useDebounce';
+import useSpotifySearch from '../../../../hooks/useSpotifySearch';
 
 const TYPE_LABELS = {
   track: 'Song',
@@ -38,65 +37,34 @@ const TYPE_COLORS = {
 
 const FILTER_TYPES = ['track', 'album', 'playlist', 'show'];
 
+/**
+ * Presentational Spotify-search component (Phase 5b refactor).
+ *
+ * All state + RPC + debounce logic lives in ``useSpotifySearch``. This
+ * component is purely presentational + minimal event wiring.
+ *
+ * Public API unchanged: ``isSelecting``, ``onSelectContent``, ``onPlay``.
+ */
 const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
   const { t } = useTranslation();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [error, setError] = useState(null);
-  const [searchPerformed, setSearchPerformed] = useState(false);
-  const [activeFilter, setActiveFilter] = useState(null);
 
-  const filteredResults = activeFilter
-    ? searchResults.filter((item) => item.type === activeFilter)
-    : searchResults;
-
-  const performSearch = useCallback(async (query) => {
-    if (!query || query.trim().length < 2) {
-      setSearchResults([]);
-      setSearchPerformed(false);
-      return;
-    }
-
-    setIsSearching(true);
-    setError(null);
-    setSearchPerformed(true);
-
-    try {
-      // Phase 5a FU#1: request() throws on failure; the renamed
-      // ``searchError`` was always undefined. The catch block is the
-      // canonical error path.
-      const { result } = await request('spotifySearch', {
-        query: query.trim(),
-        content_type: 'playlist,album,track,show',
-        limit: 10,
-      });
-
-      if (result && result.items) {
-        setSearchResults(result.items);
-      }
-    } catch (err) {
-      setError(err.message || 'Search failed');
-      setSearchResults([]);
-    } finally {
-      setIsSearching(false);
-    }
-  }, []);
+  const {
+    query,
+    setQuery,
+    searching,
+    error,
+    searchPerformed,
+    activeFilter,
+    setActiveFilter,
+    filteredResults,
+    results,
+    submitNow,
+  } = useSpotifySearch();
 
   const handleSearchSubmit = (event) => {
     event.preventDefault();
-    performSearch(searchQuery);
+    submitNow();
   };
-
-  // Phase 4: debounce typed queries by 300ms so we don't fire an RPC on
-  // every keystroke. The submit button + Enter key still trigger an
-  // immediate search via ``handleSearchSubmit``.
-  const debouncedQuery = useDebounce(searchQuery, 300);
-  useEffect(() => {
-    if (debouncedQuery && debouncedQuery.trim().length >= 2) {
-      performSearch(debouncedQuery);
-    }
-  }, [debouncedQuery, performSearch]);
 
   return (
     <Box sx={{ width: '100%' }}>
@@ -106,8 +74,8 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
             fullWidth
             label={t('spotify.search.label', 'Search Spotify')}
             placeholder={t('spotify.search.placeholder', 'Search for songs, albums, playlists...')}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
             variant="outlined"
             size="medium"
             autoFocus
@@ -116,7 +84,7 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
             type="submit"
             variant="contained"
             startIcon={<SearchIcon />}
-            disabled={isSearching || searchQuery.trim().length < 2}
+            disabled={searching || query.trim().length < 2}
             sx={{ minWidth: '120px' }}
           >
             {t('spotify.search.button', 'Search')}
@@ -124,7 +92,7 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
         </Box>
       </form>
 
-      {searchResults.length > 0 && (
+      {results.length > 0 && (
         <Box sx={{ display: 'flex', gap: 1, mb: 2, flexWrap: 'wrap' }}>
           <Chip
             label={t('spotify.filter.all', 'All')}
@@ -132,7 +100,7 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
             onClick={() => setActiveFilter(null)}
           />
           {FILTER_TYPES.map((type) => {
-            const count = searchResults.filter((i) => i.type === type).length;
+            const count = results.filter((i) => i.type === type).length;
             if (count === 0) return null;
             return (
               <Chip
@@ -147,7 +115,7 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
         </Box>
       )}
 
-      {isSearching && (
+      {searching && (
         <Box
           sx={{ display: 'flex', justifyContent: 'center', py: 4 }}
           data-testid="spotify-search-loading"
@@ -163,13 +131,13 @@ const SpotifySearch = ({ isSelecting, onSelectContent, onPlay }) => {
         </Typography>
       )}
 
-      {!isSearching && searchPerformed && filteredResults.length === 0 && !error && (
+      {!searching && searchPerformed && filteredResults.length === 0 && !error && (
         <Typography color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>
           {t('spotify.search.no-results', 'No results found. Try a different search term.')}
         </Typography>
       )}
 
-      {!isSearching && filteredResults.length > 0 && (
+      {!searching && filteredResults.length > 0 && (
         <Grid container spacing={2}>
           {filteredResults.map((item, index) => (
             <Grid item xs={12} sm={6} md={4} key={item.uri || index}>

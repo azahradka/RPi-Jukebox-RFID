@@ -42,16 +42,17 @@ jobs:
           # Webapp coverage floor. Phase 0b established the React test
           # scaffold (mockSocket, renderWithProviders) but no behavioural
           # tests yet, so this gate stayed at 0. Phase 4 (Web UI quick
-          # wins) is the first phase shipping meaningful React tests:
-          # useSubscription + useDebounce hooks, page-scoped error
-          # boundaries, AppSettings refresh-on-save, Folders loading +
-          # error states, SpotifySearch debounce, Cards register
-          # re-render isolation. Measured ~19% statements / ~11% branches;
-          # floors set at 15% statements/functions/lines and 10% branches
-          # (branches lag because untested pages still have many
-          # conditional renders). Subsequent webapp phases ratchet up.
-          WEBAPP_COVERAGE_FLOOR_LINES: '15'
-          WEBAPP_COVERAGE_FLOOR_BRANCHES: '10'
+          # wins) added the first behavioural tests (debounce,
+          # subscription, error boundary, AppSettings, Folders,
+          # SpotifySearch debounce, Cards register isolation) and set
+          # the floor at 15/10. Phase 5b adds the useSpotifyAuth +
+          # useSpotifySearch hooks, the split SettingsSpotify
+          # subcomponents, and the shared-REQ-socket queue tests, lifting
+          # measured coverage to ~32% statements / ~22% branches.
+          # Floors ratchet to 25/18 to leave a small safety margin for
+          # incremental refactors.
+          WEBAPP_COVERAGE_FLOOR_LINES: '25'
+          WEBAPP_COVERAGE_FLOOR_BRANCHES: '18'
         run: |
           npm test -- \
             --watchAll=false \
