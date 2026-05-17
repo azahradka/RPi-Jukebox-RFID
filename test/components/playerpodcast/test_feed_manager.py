@@ -8,13 +8,12 @@ import tempfile
 import shutil
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime, timezone
 
 # Import the module to test
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / 'src' / 'jukebox'))
 
-from components.playerpodcast.feed_manager import PodcastFeedManager
+from components.playerpodcast.feed_manager import PodcastFeedManager  # noqa: E402
 
 
 @pytest.fixture

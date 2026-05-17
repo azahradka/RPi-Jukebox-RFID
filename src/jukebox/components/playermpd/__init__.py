@@ -471,12 +471,12 @@ class PlayerMPD:
                 songpos = int(status.get('song', 0))
                 logger.info(f"[SEEK-DEBUG] Attempting seek to position {songpos}, time {new_time}")
                 self.mpd_client.seek(songpos, new_time)
-                logger.info(f"[SEEK-DEBUG] Seek successful using seek(songpos, time)")
+                logger.info("[SEEK-DEBUG] Seek successful using seek(songpos, time)")
             except Exception as e:
                 # Fallback to seekcur for compatibility
                 logger.warning(f"[SEEK-DEBUG] seek(songpos, time) failed: {e}, trying seekcur")
                 self.mpd_client.seekcur(new_time)
-                logger.info(f"[SEEK-DEBUG] Seek successful using seekcur")
+                logger.info("[SEEK-DEBUG] Seek successful using seekcur")
 
     @plugs.tag
     def rewind(self):
