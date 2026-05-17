@@ -36,8 +36,8 @@ Reference the meta-plan; do not re-derive scope. End-of-phase: open PR, update `
 | 3b | playerpodcast cleanup + tests | done 2026-05-17 | [#7](https://github.com/azahradka/RPi-Jukebox-RFID/pull/7) |
 | 3c | playerspotify cleanup + tests | done 2026-05-17 | [#6](https://github.com/azahradka/RPi-Jukebox-RFID/pull/6) |
 | 4 | Web UI quick wins | done 2026-05-17 | [#8](https://github.com/azahradka/RPi-Jukebox-RFID/pull/8) |
-| 5a | Unified RPC contract (single source of truth) | in progress | PR open |
-| 5b | UI monolith breakups + socket pooling | not started | |
+| 5a | Unified RPC contract (single source of truth) | done 2026-05-17 | [#10](https://github.com/azahradka/RPi-Jukebox-RFID/pull/10) |
+| 5b | UI monolith breakups + socket pooling | in progress | PR open |
 | 6 | Core framework polish (plugs/daemon/cfg validation) | done 2026-05-17 | [#9](https://github.com/azahradka/RPi-Jukebox-RFID/pull/9) |
 | 7 | Dev workflow (auto-sync, local smoke harness) | not started | |
 
