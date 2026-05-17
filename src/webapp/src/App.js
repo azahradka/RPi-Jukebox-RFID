@@ -6,6 +6,7 @@ import AppSettingsProvider from './context/appsettings';
 import PubSubProvider from './context/pubsub';
 import PlayerProvider from './context/player';
 import Router from './router';
+import ErrorBoundary from './components/ErrorBoundary';
 
 function App() {
   return (
@@ -28,10 +29,13 @@ function App() {
 }
 
 // here app catches the suspense from page in case translations are not yet loaded
+// and the ErrorBoundary catches any uncaught RPC errors (Phase 1, fix #7)
 export default function WrappedApp() {
   return (
-    <Suspense fallback="Loading ...">
-      <App />
-    </Suspense>
+    <ErrorBoundary>
+      <Suspense fallback="Loading ...">
+        <App />
+      </Suspense>
+    </ErrorBoundary>
   );
 }
