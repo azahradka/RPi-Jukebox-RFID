@@ -15,12 +15,10 @@ wrapper in ``components.jingle.play`` and this test fails.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 import threading
-import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -29,49 +27,11 @@ _JUKEBOX_SRC = Path(__file__).resolve().parents[3] / 'src' / 'jukebox'
 if str(_JUKEBOX_SRC) not in sys.path:
     sys.path.insert(0, str(_JUKEBOX_SRC))
 
-
-def _reinstall_jingle_test_modules():
-    """Re-install the decorator-neutralising plugs mock + real-cfghandler
-    layer that ``conftest.py`` does at import time.
-
-    Earlier tests (e.g. playerpodcast) replace ``sys.modules['jukebox']``
-    with their own MagicMock; this fixture must rebuild the layer
-    every time so subsequent ``import components.jingle`` runs against
-    OUR mock (which keeps the real lock object).
-    """
-    plugs_path = _JUKEBOX_SRC / 'jukebox' / 'plugs.py'
-    spec = importlib.util.spec_from_file_location(
-        '_jukebox_plugs_real', plugs_path)
-    real_plugs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(real_plugs)
-
-    plugs_mock = MagicMock()
-    plugs_mock.register = lambda f=None, **kw: (lambda fn: fn) if f is None else f
-    plugs_mock.initialize = lambda f: f
-    plugs_mock.finalize = lambda f: f
-    plugs_mock.atexit = lambda f: f
-    plugs_mock.tag = lambda f: f
-    plugs_mock._lock_module = real_plugs._lock_module
-    plugs_mock.drop_module_lock_for_blocking_call = (
-        real_plugs.drop_module_lock_for_blocking_call
-    )
-    plugs_mock.call_ignore_errors = real_plugs.call_ignore_errors
-
-    cfg_path = _JUKEBOX_SRC / 'jukebox' / 'cfghandler.py'
-    spec = importlib.util.spec_from_file_location(
-        'jukebox.cfghandler', cfg_path)
-    cfg_mod = importlib.util.module_from_spec(spec)
-    sys.modules['jukebox.cfghandler'] = cfg_mod
-    spec.loader.exec_module(cfg_mod)
-
-    jukebox_pkg = types.ModuleType('jukebox')
-    jukebox_pkg.__path__ = [str(_JUKEBOX_SRC / 'jukebox')]
-    jukebox_pkg.plugs = plugs_mock
-    jukebox_pkg.cfghandler = cfg_mod
-    sys.modules['jukebox'] = jukebox_pkg
-    sys.modules['jukebox.plugs'] = plugs_mock
-    sys.modules.pop('components.jingle', None)
-    return plugs_mock
+# The decorator-neutralising plugs mock + real-cfghandler stub are
+# installed per-test by the ``_install_jingle_plugs_mock`` fixture
+# in conftest.py (autouse). The fixture also restores the real
+# ``jukebox.plugs`` on teardown so subsequent test files see a clean
+# environment.
 
 
 @pytest.fixture
@@ -84,9 +44,8 @@ def jingle_module():
     still exercise the real lock object — not a parallel
     implementation.
     """
-    # Re-install in case a prior test module shadowed sys.modules.
-    _reinstall_jingle_test_modules()
-
+    # ``_install_jingle_plugs_mock`` (autouse in conftest.py) has
+    # already installed the mock for this test.
     import jukebox.cfghandler as cfghandler
     cfg = cfghandler.get_handler('jukebox')
     cfg.config_dict({'jingle': {}})
