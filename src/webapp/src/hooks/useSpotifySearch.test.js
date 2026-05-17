@@ -117,4 +117,56 @@ describe('useSpotifySearch', () => {
     expect(ref.current.results).toHaveLength(0);
     expect(ref.current.searching).toBe(false);
   });
+
+  it('discards out-of-order responses (stale-result guard)', async () => {
+    // Reviewer ask (Phase 5b): a slow reply to query "ab" must NOT
+    // overwrite the fresher results from query "abc".
+    //
+    // Reversion check: delete ``latestQueryRef`` from useSpotifySearch
+    // (or the trimmed-mismatch guards inside ``performSearch``) and
+    // this test fails — the stale "ab" payload clobbers "abc".
+    jest.useRealTimers();
+
+    // Build two manually-controlled deferred promises so the test
+    // chooses the response order independently of the request order.
+    let resolveAb;
+    let resolveAbc;
+    const abPromise = new Promise((res) => { resolveAb = res; });
+    const abcPromise = new Promise((res) => { resolveAbc = res; });
+
+    __setMockResponse('player_spotify.ctrl.search', (kwargs) => {
+      if (kwargs.query === 'ab') return abPromise;
+      if (kwargs.query === 'abc') return abcPromise;
+      return Promise.resolve({ items: [] });
+    });
+
+    const ref = mount();
+
+    // Fire query "ab" (older), then "abc" (newer). Both via submitNow
+    // so we bypass the debounce and control timing exactly.
+    let abSettle;
+    let abcSettle;
+    act(() => {
+      abSettle = ref.current.submitNow('ab');
+      abcSettle = ref.current.submitNow('abc');
+    });
+
+    // Resolve newer FIRST, then older. The older reply lands LAST and
+    // must NOT overwrite the newer results.
+    await act(async () => {
+      resolveAbc({ items: [{ uri: 'spotify:track:new', type: 'track', name: 'NewTrack' }] });
+      await abcSettle;
+    });
+    expect(ref.current.results).toHaveLength(1);
+    expect(ref.current.results[0].uri).toBe('spotify:track:new');
+
+    await act(async () => {
+      resolveAb({ items: [{ uri: 'spotify:track:old', type: 'track', name: 'OldTrack' }] });
+      await abSettle;
+    });
+
+    // Stale "ab" reply landed last but the guard must have discarded it.
+    expect(ref.current.results).toHaveLength(1);
+    expect(ref.current.results[0].uri).toBe('spotify:track:new');
+  });
 });

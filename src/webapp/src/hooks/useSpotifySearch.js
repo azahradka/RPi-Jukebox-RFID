@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import request from '../utils/request';
 import useDebounce from './useDebounce';
@@ -50,14 +50,25 @@ const useSpotifySearch = ({
   const [searchPerformed, setSearchPerformed] = useState(false);
   const [activeFilter, setActiveFilter] = useState(null);
 
+  // Phase 5b race-condition guard. Without this, an in-flight request
+  // for an older query (e.g. "ab") can land *after* a newer request
+  // (e.g. "abc") and overwrite the newer results. The ref tracks the
+  // most recently dispatched query; responses for stale queries are
+  // discarded.
+  const latestQueryRef = useRef(null);
+
   const performSearch = useCallback(async (q) => {
     const trimmed = (q || '').trim();
     if (trimmed.length < 2) {
+      latestQueryRef.current = trimmed;
       setResults([]);
       setSearchPerformed(false);
       return;
     }
 
+    // Mark this query as the latest dispatched. Responses are only
+    // applied if this ref still matches when the reply arrives.
+    latestQueryRef.current = trimmed;
     setSearching(true);
     setError(null);
     setSearchPerformed(true);
@@ -68,16 +79,30 @@ const useSpotifySearch = ({
         content_type: contentType,
         limit,
       });
+      // Stale-response guard: a newer query has been dispatched since
+      // we issued this request. Drop the result.
+      if (latestQueryRef.current !== trimmed) {
+        return;
+      }
       if (result && result.items) {
         setResults(result.items);
       } else {
         setResults([]);
       }
     } catch (err) {
+      // Same stale-response guard applies to errors so an old failure
+      // does not clobber a newer in-flight search's UI state.
+      if (latestQueryRef.current !== trimmed) {
+        return;
+      }
       setError((err && err.message) || 'Search failed');
       setResults([]);
     } finally {
-      setSearching(false);
+      // Only flip ``searching`` off if this is still the latest query.
+      // A stale completion must not unset the spinner for the live one.
+      if (latestQueryRef.current === trimmed) {
+        setSearching(false);
+      }
     }
   }, [contentType, limit]);
 

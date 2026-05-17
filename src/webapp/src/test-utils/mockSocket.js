@@ -41,6 +41,13 @@ const socketRequest = (_package, plugin, method, kwargs) => {
   __mockSocketLog.push({ key, kwargs });
   if (key in __mockSocketResponses) {
     const resp = __mockSocketResponses[key];
+    // A function lets a test return a *different* response per call —
+    // including a manually-controlled Promise for race-condition tests.
+    if (typeof resp === 'function') {
+      const value = resp(kwargs);
+      if (value && typeof value.then === 'function') return value;
+      return value instanceof Error ? Promise.reject(value) : Promise.resolve(value);
+    }
     return resp instanceof Error ? Promise.reject(resp) : Promise.resolve(resp);
   }
   return Promise.resolve(undefined);
