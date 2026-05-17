@@ -27,7 +27,6 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Shutdown / Reboot
 # ---------------------------------------------------------------------------
-@plugin.register
 def shutdown():
     """Shutdown the host machine"""
     logger.info('Shutting down host system now')
@@ -49,7 +48,6 @@ def shutdown():
     logger.info('Shutdown command dispatched to host')
 
 
-@plugin.register
 def reboot():
     """Reboot the host machine"""
     logger.info('Rebooting down host system now')
@@ -64,7 +62,6 @@ def reboot():
     logger.info('Reboot command dispatched to host')
 
 
-@plugin.register
 def jukebox_is_service():
     """Check if current Jukebox process is running as a service"""
     ret = subprocess.run(['systemctl', 'show', '--user', '--property', 'MainPID', '--value', 'jukebox-daemon'],
@@ -84,7 +81,6 @@ def jukebox_is_service():
     return pid == os.getpid()
 
 
-@plugin.register
 def is_any_jukebox_service_active():
     """Check if a Jukebox service is running
 
@@ -106,7 +102,6 @@ def is_any_jukebox_service_active():
     return is_active
 
 
-@plugin.register
 def restart_service():
     """Restart Jukebox App if running as a service"""
     msg = ''
@@ -124,7 +119,6 @@ def restart_service():
     return msg
 
 
-@plugin.register()
 def get_disk_usage(path='/'):
     """Return the disk usage in Megabytes as dictionary for RPC export"""
     [t, u, f] = shutil.disk_usage(path)
@@ -137,7 +131,6 @@ def get_disk_usage(path='/'):
 timer_temperature: GenericEndlessTimerClass
 
 
-@plugin.register
 def get_cpu_temperature():
     """Get the CPU temperature with single decimal point
 
@@ -148,7 +141,6 @@ def get_cpu_temperature():
     return temperature
 
 
-@plugin.register
 def publish_cpu_temperature():
     global timer_temperature
     try:
@@ -169,7 +161,6 @@ def publish_cpu_temperature():
 # Network
 # ---------------------------------------------------------------------------
 
-@plugin.register
 def get_ip_address():
     """
     Get the IP address
@@ -185,7 +176,6 @@ def get_ip_address():
     return ip_address
 
 
-@plugin.register
 def say_my_ip(option='full'):
     ip_address = get_ip_address()
 
@@ -200,7 +190,6 @@ def say_my_ip(option='full'):
 # ---------------------------------------------------------------------------
 # MISC
 # ---------------------------------------------------------------------------
-@plugin.register()
 def wlan_disable_power_down(card=None):
     """Turn off power management of wlan. Keep RPi reachable via WLAN
 
@@ -215,7 +204,6 @@ def wlan_disable_power_down(card=None):
         logger.error(f"{ret.stdout}")
 
 
-@plugin.register
 def get_autohotspot_status():
     """Get the status of the auto hotspot feature"""
     status = 'not-installed'
@@ -241,7 +229,6 @@ def get_autohotspot_status():
     return status
 
 
-@plugin.register()
 def stop_autohotspot():
     """Stop auto hotspot functionality
 
@@ -267,7 +254,6 @@ def stop_autohotspot():
         return 'not-installed'
 
 
-@plugin.register()
 def start_autohotspot():
     """Start auto hotspot functionality
 
@@ -307,7 +293,6 @@ def command_exists(command):
     return ret is not None
 
 
-@plugin.register
 def hdmi_power_down():
     """Power down HDMI circuits to save power if no display is connected
 
@@ -334,7 +319,6 @@ def filter_throttle_codes(code):
             yield msg
 
 
-@plugin.register
 def get_throttled():
     commandname = "vcgencmd"
     if command_exists(commandname):
@@ -366,7 +350,6 @@ def get_throttled():
 # ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
-@plugin.initialize
 def initialize():
     wlan_power = cfg.setndefault('host', 'wlan_power', 'disable_power_down', value=True)
     card = cfg.setndefault('host', 'wlan_power', 'card', value='wlan0')
@@ -377,7 +360,6 @@ def initialize():
         hdmi_power_down()
 
 
-@plugin.finalize
 def finalize():
     global timer_temperature
     enabled = cfg.setndefault('host', 'publish_temperature', 'enabled', value=True)
@@ -392,8 +374,30 @@ def finalize():
         timer_temperature.start()
 
 
-@plugin.atexit
 def atexit(**ignored_kwargs):
     global timer_temperature
     timer_temperature.cancel()
     return timer_temperature.timer_thread
+
+
+def init_plugin():
+    """Register hostif.linux callables and lifecycle hooks (Item 3)."""
+    plugin.register(shutdown)
+    plugin.register(reboot)
+    plugin.register(jukebox_is_service)
+    plugin.register(is_any_jukebox_service_active)
+    plugin.register(restart_service)
+    plugin.register(get_disk_usage)
+    plugin.register(get_cpu_temperature)
+    plugin.register(publish_cpu_temperature)
+    plugin.register(get_ip_address)
+    plugin.register(say_my_ip)
+    plugin.register(wlan_disable_power_down)
+    plugin.register(get_autohotspot_status)
+    plugin.register(stop_autohotspot)
+    plugin.register(start_autohotspot)
+    plugin.register(hdmi_power_down)
+    plugin.register(get_throttled)
+    plugin.initialize(initialize)
+    plugin.finalize(finalize)
+    plugin.atexit(atexit)

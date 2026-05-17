@@ -14,25 +14,21 @@ logger = logging.getLogger('jb.misc')
 cfg = jukebox.cfghandler.get_handler('jukebox')
 
 
-@plugin.register
 def rpc_cmd_help():
     """Return all commands for RPC"""
     return plugin.summarize()
 
 
-@plugin.register
 def get_all_loaded_packages():
     """Get all successfully loaded plugins"""
     return plugin.get_all_loaded_packages()
 
 
-@plugin.register
 def get_all_failed_packages():
     """Get all plugins with error during load or initialization"""
     return plugin.get_all_failed_packages()
 
 
-@plugin.register
 def get_start_time():
     """Time when JukeBox has been started"""
     return time.ctime(get_jukebox_daemon().start_time)
@@ -70,30 +66,25 @@ def get_log(handler_name: str):
     return content
 
 
-@plugin.register
 def get_log_debug():
     """Get the log file (from the debug_file_handler)"""
     return get_log('debug_file_handler')
 
 
-@plugin.register
 def get_log_error():
     """Get the log file (from the error_file_handler)"""
     return get_log('error_file_handler')
 
 
-@plugin.register
 def get_version():
     return jukebox.version()
 
 
-@plugin.register
 def get_git_state():
     """Return git state information for the current branch"""
     return get_jukebox_daemon().git_state
 
 
-@plugin.register
 def empty_rpc_call(msg: str = ''):
     """This function does nothing.
 
@@ -109,7 +100,6 @@ def empty_rpc_call(msg: str = ''):
         logger.warning(msg)
 
 
-@plugin.register
 def get_app_settings():
     """Return settings for web app stored in jukebox.yaml"""
     show_covers = cfg.setndefault('webapp', 'show_covers', value=True)
@@ -119,8 +109,29 @@ def get_app_settings():
     }
 
 
-@plugin.register
 def set_app_settings(settings={}):
     """Set configuration settings for the web app."""
     for key, value in settings.items():
         cfg.setn('webapp', key, value=value)
+
+
+def init_plugin():
+    """Register every public misc helper as a plugs callable.
+
+    Item 3 (plug-time-coupling refactor): the misc.py module exposes
+    a flat set of RPC helpers (rpc_cmd_help, log accessors, app
+    settings, ...). Moving the registrations into ``init_plugin()``
+    means importing the module no longer mutates the plugs registry,
+    so test/tooling code can use these helpers as plain functions.
+    """
+    plugin.register(rpc_cmd_help)
+    plugin.register(get_all_loaded_packages)
+    plugin.register(get_all_failed_packages)
+    plugin.register(get_start_time)
+    plugin.register(get_log_debug)
+    plugin.register(get_log_error)
+    plugin.register(get_version)
+    plugin.register(get_git_state)
+    plugin.register(empty_rpc_call)
+    plugin.register(get_app_settings)
+    plugin.register(set_app_settings)

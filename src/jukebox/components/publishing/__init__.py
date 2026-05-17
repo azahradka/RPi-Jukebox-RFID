@@ -20,7 +20,6 @@ cfg = jukebox.cfghandler.get_handler('jukebox')
 _PUBLISH_SERVER_THREAD: pub.server.PublishServer
 
 
-@plugin.register
 def republish(topic=None):
     """Re-publish the topic tree 'topic' to all subscribers
 
@@ -28,8 +27,8 @@ def republish(topic=None):
     pub.get_publisher().resend(topic)
 
 
-@plugin.initialize
 def initialize():
+    """Start the publish server. Registered via :func:`init_plugin`."""
     global _PUBLISH_SERVER_THREAD
     tcp_port = cfg.setndefault('publishing', 'tcp_port', value=5558)
     ws_port = cfg.setndefault('publishing', 'websocket_port', value=5566)
@@ -39,10 +38,17 @@ def initialize():
     pub.get_publisher().send('core.version', jukebox.version())
 
 
-@plugin.atexit
 def closing(**ignored_kwargs):
+    """Stop the publish server. Registered via :func:`init_plugin`."""
     global _PUBLISH_SERVER_THREAD
     logger.debug("Closing publish server connection")
     pub.get_publisher().send('core.welcome', 'Goodbye. Hear you later!')
     pub.get_publisher().close_server()
     return _PUBLISH_SERVER_THREAD
+
+
+def init_plugin():
+    """Register publishing callable + lifecycle hooks (Item 3)."""
+    plugin.register(republish)
+    plugin.initialize(initialize)
+    plugin.atexit(closing)

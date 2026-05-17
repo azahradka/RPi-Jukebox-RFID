@@ -46,13 +46,11 @@ class JingleFactory:
 factory: JingleFactory
 
 
-@plugin.initialize
 def initialize():
     global factory
     factory = JingleFactory()
 
 
-@plugin.register
 def play(filename):
     """Play the jingle using the configured jingle service
 
@@ -88,19 +86,16 @@ def play(filename):
         plugin.call_ignore_errors('volume', 'ctrl', 'set_volume', args=[active_volume])
 
 
-@plugin.register
 def play_startup():
     """Play the startup sound (using jingle.play)"""
     play(cfg['jingle']['startup_sound'])
 
 
-@plugin.register
 def play_shutdown():
     """Play the shutdown sound (using jingle.play)"""
     play(cfg['jingle']['shutdown_sound'])
 
 
-@plugin.finalize
 def finalize():
     if 'startup_sound' in cfg['jingle']:
         plugin.call_ignore_errors('jingle', 'play_startup', as_thread=True, thread_name='StartJingle')
@@ -108,7 +103,6 @@ def finalize():
         logger.debug("No startup sound in config file")
 
 
-@plugin.atexit
 def atexit(signal_id: int, **ignored_kwargs):
     # Only play the shutdown sound when terminated with a proper command. Not on Ctrl-C (faster exit for developers :-)
     if signal_id == signal.SIGTERM:
@@ -119,3 +113,13 @@ def atexit(signal_id: int, **ignored_kwargs):
             plugin.call_ignore_errors('jingle', 'play_shutdown', as_thread=False)
         else:
             logger.debug("No shutdown sound in config file")
+
+
+def init_plugin():
+    """Register jingle callables and lifecycle hooks (Item 3)."""
+    plugin.initialize(initialize)
+    plugin.register(play)
+    plugin.register(play_startup)
+    plugin.register(play_shutdown)
+    plugin.finalize(finalize)
+    plugin.atexit(atexit)

@@ -469,6 +469,34 @@ function scanRegistry(componentsRoot, aliasByDir) {
       }
     }
 
+    // Pass B2 (Item 3 init_plugin convention): find
+    // ``plugs.register(funcname)`` / ``plugin.register(funcname)``
+    // calls where the first argument is a bare identifier. This
+    // happens inside ``init_plugin()`` bodies for plugins that
+    // migrated to the new convention — module-level decorators
+    // would be the only other indicator that ``funcname`` is RPC-
+    // callable, and migrating to init_plugin() removes them. So we
+    // also accept the function-call style as a registration signal.
+    //
+    // Heuristic: the identifier must be a module-level ``def``
+    // somewhere in the same file. We don't distinguish init_plugin()
+    // body from any other call site (out-of-band registrations are
+    // not idiomatic anyway).
+    const moduleLevelDefs = new Set();
+    for (const line of lines) {
+      const m = line.match(/^def\s+([A-Za-z_]\w*)\s*\(/);
+      if (m) moduleLevelDefs.add(m[1]);
+    }
+    const bareRegisterCalls = [...src.matchAll(
+      /(?:plugs|plugin)\.register\(\s*([A-Za-z_]\w*)\s*\)/g
+    )];
+    for (const m of bareRegisterCalls) {
+      const ident = m[1];
+      if (moduleLevelDefs.has(ident)) {
+        registry.add(`${alias}::${ident}::None`);
+      }
+    }
+
     // Pass C: top-level @plugs.register / @plugin.register
     // (function-style or class-style with auto_tag) — produces
     // (alias, function_name, None).

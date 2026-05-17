@@ -35,7 +35,6 @@ timer_fade_volume: VolumeFadoutAndShutdown
 timer_idle_shutdown: IdleShutdownTimer
 
 
-@plugin.finalize
 def finalize():
     # Shutdown Timer
     global timer_shutdown
@@ -83,7 +82,6 @@ def finalize():
     # MPD
 
 
-@plugin.atexit
 def atexit(**ignored_kwargs):
     global timer_shutdown
     timer_shutdown.cancel()
@@ -103,3 +101,9 @@ def atexit(**ignored_kwargs):
         timer_idle_check.timer_thread
     ]
     return ret
+
+
+def init_plugin():
+    """Register lifecycle hooks (Item 3)."""
+    plugin.finalize(finalize)
+    plugin.atexit(atexit)

@@ -15,7 +15,6 @@ cfg = jukebox.cfghandler.get_handler('jukebox')
 # ---------------------------------------------------------------------------
 # A generic mp3 player service for the jingle playback
 
-@plugin.register(auto_tag=True)
 class JingleMp3Play:
     """Jingle Service for playing MP3 files"""
 
@@ -45,7 +44,13 @@ class JingleMp3PlayBuilder:
 # Plugin Initializer / Finalizer
 # ---------------------------------------------------------------------------
 
-@plugin.initialize
 def initialize():
     jingle = plugin.get('jingle')
     jingle.factory.register("mp3", JingleMp3PlayBuilder())
+
+
+def init_plugin():
+    """Decorate :class:`JingleMp3Play` with auto_tag and register init (Item 3)."""
+    global JingleMp3Play
+    JingleMp3Play = plugin.register(JingleMp3Play, auto_tag=True)
+    plugin.initialize(initialize)

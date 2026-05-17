@@ -42,15 +42,21 @@ class battmon_ina219(BatteryMonitorBase.BattmonBase):
             raise
 
 
-@plugs.finalize
 def finalize():
+    """Construct the INA219 battery monitor. Registered via :func:`init_plugin`."""
     global batt_mon
     cfg = jukebox.cfghandler.get_handler('jukebox')
     batt_mon = battmon_ina219(cfg)
     plugs.register(batt_mon, name='batt_mon')
 
 
-@plugs.atexit
 def atexit(**ignored_kwargs):
+    """Cancel status thread. Registered via :func:`init_plugin`."""
     global batt_mon
     batt_mon.status_thread.cancel()
+
+
+def init_plugin():
+    """Register lifecycle hooks (Item 3)."""
+    plugs.finalize(finalize)
+    plugs.atexit(atexit)

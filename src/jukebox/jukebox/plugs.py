@@ -490,7 +490,12 @@ def register(plugin: Optional[Callable] = None, *,
             return inner_function
         if inspect.isclass(plugin):
             # Case B: 1-level decorator around a class
-            return _register_class(cast(Type, plugin), auto_tag=False)
+            # Item 3: thread ``auto_tag`` through for callers that pass
+            # the class positionally — ``plugs.register(cls, auto_tag=True)``
+            # is the function-call form of ``@plugs.register(auto_tag=True)``
+            # and the two should produce the same decorated class. The
+            # previous hardcoded ``False`` made the form unusable.
+            return _register_class(cast(Type, plugin), auto_tag=auto_tag)
         else:
             # Everything else: throw it at object registration
             # Case C.1: Used as 1-level decorator on a function
