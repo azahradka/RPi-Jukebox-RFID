@@ -40,7 +40,7 @@ import jukebox.cfghandler
 import jukebox.plugs as plugs
 import jukebox.publishing as publishing
 from jukebox.utils.atomic_io import atomic_write_json_safe
-import components.player as player_module
+from components.player.coordinator import get_coordinator
 from .spotify_auth import SpotifyAuthManager
 from .content_resolver import SpotifyContentResolver
 
@@ -170,13 +170,15 @@ class PlayerSpotify:
             )
 
     def _activate(self):
-        """Stop MPD and claim active player so only Spotify publishes status."""
-        if player_module.get_active_player() != 'spotify':
-            try:
-                plugs.call('player', 'ctrl', 'stop')
-            except Exception as e:
-                logger.debug(f"Could not stop MPD: {e}")
-            player_module.set_active_player('spotify')
+        """Claim the active-player slot via the coordinator.
+
+        The coordinator runs the outgoing backend's pause-then-stop
+        (so MPD's playback is stopped, or podcast's resume position is
+        preserved), bounded by a 5s timeout. Idempotent when Spotify
+        is already current.
+        """
+        with get_coordinator().activate('spotify'):
+            pass
 
     def _discover_device(self):
         """Discover librespot device by name.
@@ -372,7 +374,7 @@ class PlayerSpotify:
 
     def _is_active(self):
         """Return True if Spotify is the active player."""
-        return player_module.get_active_player() == 'spotify'
+        return get_coordinator().current() == 'spotify'
 
     def _poll_status_once(self, consecutive_errors):
         """Run one status-poll cycle.
@@ -1030,7 +1032,7 @@ class PlayerSpotify:
             # Second swipe detection - only if Spotify is the active player.
             # When switching FROM another player (podcast, MPD), always do
             # a fresh play_content so the track actually starts.
-            if last_uri == uri and player_module.get_active_player() == 'spotify':
+            if last_uri == uri and get_coordinator().current() == 'spotify':
                 logger.info(f"Second swipe detected for: {uri}")
                 self.second_swipe_action()
             else:
@@ -1148,6 +1150,19 @@ def initialize():
     global player_ctrl
     player_ctrl = PlayerSpotify()
     plugs.register(player_ctrl, name='ctrl')
+
+    # Register with the player coordinator so cross-backend handoffs
+    # (MPD/podcast claiming the active slot) pause then stop Spotify
+    # cleanly before the new backend takes over. pause(1) leaves the
+    # Spotify-side cursor in place, preserving resume position; stop
+    # is bounded by the coordinator's 5s timeout so a slow Spotify
+    # API hiccup cannot stall the handoff.
+    get_coordinator().register(
+        name='spotify',
+        pause_fn=lambda: player_ctrl.pause(1),
+        stop_fn=player_ctrl.stop,
+    )
+
     logger.info("Spotify player plugin registered as 'playerspotify.ctrl'")
 
 

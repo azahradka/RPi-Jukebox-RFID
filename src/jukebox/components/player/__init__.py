@@ -1,7 +1,6 @@
 import os
 import re
 import logging
-import threading
 import jukebox.cfghandler
 from typing import Optional
 
@@ -57,40 +56,13 @@ def get_music_library_path():
 
 
 # ---------------------------------------------------------------------------
-# Active player tracking
+# Active-player tracking moved to :mod:`components.player.coordinator`.
 # ---------------------------------------------------------------------------
-# Only the active player should publish to the 'playerstatus' topic.
-# Valid values: 'mpd', 'spotify', None
+# Phase 2 retired the leaky ``_active_player`` module global plus its
+# ``get_active_player`` / ``set_active_player`` (and CAS) helpers in
+# favour of the :class:`PlayerCoordinator` primitive. All three player
+# backends now register with the coordinator at init and call
+# ``coordinator.activate(name)`` for cross-backend handoff; status
+# publishers gate on ``coordinator.current() == self.name``.
 #
-# Writers are racy (MPD poll thread, Spotify poll thread, RPC threads driving
-# play_card). The lock makes reads/writes atomic, and gives callers a
-# compare-and-swap option to avoid clobbering a hand-off that already won.
-_active_player: Optional[str] = 'mpd'
-_active_player_lock = threading.Lock()
-_ACTIVE_PLAYER_UNSET = object()  # sentinel for "no expected_current supplied"
-
-
-def get_active_player() -> Optional[str]:
-    with _active_player_lock:
-        return _active_player
-
-
-def set_active_player(player_name: Optional[str], expected_current=_ACTIVE_PLAYER_UNSET) -> bool:
-    """Set the active player, optionally as a compare-and-swap.
-
-    If ``expected_current`` is provided, the swap only succeeds when the
-    current active player equals that value. Returns ``True`` on success,
-    ``False`` if the CAS check failed. With no ``expected_current``, the
-    swap is unconditional and always returns ``True``.
-    """
-    global _active_player
-    with _active_player_lock:
-        if expected_current is not _ACTIVE_PLAYER_UNSET and _active_player != expected_current:
-            logger.debug(
-                f"set_active_player CAS rejected: expected={expected_current!r}, "
-                f"actual={_active_player!r}, requested={player_name!r}"
-            )
-            return False
-        _active_player = player_name
-    logger.info(f"Active player set to: {player_name}")
-    return True
+# See ``components.player.coordinator`` for the new API.

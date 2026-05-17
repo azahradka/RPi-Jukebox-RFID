@@ -45,6 +45,7 @@ import jukebox.cfghandler
 import jukebox.plugs as plugs
 import jukebox.publishing as publishing
 import components.player
+from components.player.coordinator import get_coordinator
 
 from .feed_manager import PodcastFeedManager
 from .episode_queue import EpisodeQueueManager
@@ -245,6 +246,22 @@ class PlayerPodcast:
 
             time.sleep(self.save_position_interval)
 
+    def _activate_podcast(self):
+        """Claim the active-player slot via the coordinator.
+
+        Triggers the outgoing backend's pause+stop (e.g. Spotify when
+        coming from a music card → podcast card swipe), bounded by
+        the coordinator's 5s stop timeout. Idempotent when podcast
+        is already current.
+
+        Note: podcast plays *through* MPD, so when MPD is the
+        outgoing backend the coordinator will call MPD's stop_fn
+        (the cleanest baseline). The subsequent ``play_single`` call
+        then drives MPD with the new episode.
+        """
+        with get_coordinator().activate('podcast'):
+            pass
+
     def _toggle_playback(self):
         """Toggle MPD playback state"""
         try:
@@ -264,13 +281,17 @@ class PlayerPodcast:
         episode_guid = episode['guid']
         playback_url = self._resolve_playback_url(episode, resume_position=0)
 
-        with self.lock:
-            plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+        # Phase 1 follow-up #2: do NOT hold ``self.lock`` across the
+        # cross-plugin call. The lock guards podcast state mutations,
+        # not the MPD wire — holding it across plugs.call would block
+        # every status RPC into this plugin for the duration of the
+        # call and risks recursive deadlocks.
+        plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
 
+        with self.lock:
             self.current_episode_guid = episode_guid
             self.playback_active = True
             self.current_episode_metadata = episode
-
             self.state_manager.update_last_played(
                 self.current_podcast_id,
                 episode_guid,
@@ -646,18 +667,25 @@ class PlayerPodcast:
             episode_guid = episode_to_play['guid']
             playback_url = self._resolve_playback_url(episode_to_play, resume_position)
 
+            # Phase 2: claim the active-player slot before driving
+            # playback — pauses+stops any other backend that was
+            # active so its resume position is preserved.
+            self._activate_podcast()
+
+            # Phase 1 follow-up #2: cross-plugin call runs WITHOUT
+            # ``self.lock``. play_single raises on failure (no return
+            # value on success). Lock is reacquired below for state
+            # mutations only.
+            logger.info(f"Calling MPD play_single: {playback_url}")
+            plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+            logger.info("MPD play_single succeeded")
+
+            # TODO: Implement playlist queuing for multiple episodes
+            if len(playable_episodes) > 1:
+                logger.info(f"Playing first episode of {len(playable_episodes)} episodes. "
+                            "Playlist queuing not yet implemented.")
+
             with self.lock:
-                # Use MPD's play_single method to play the episode URL
-                # play_single raises an exception on failure; no return value on success
-                logger.info(f"Calling MPD play_single: {playback_url}")
-                plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
-                logger.info("MPD play_single succeeded")
-
-                # TODO: Implement playlist queuing for multiple episodes
-                if len(playable_episodes) > 1:
-                    logger.info(f"Playing first episode of {len(playable_episodes)} episodes. "
-                              "Playlist queuing not yet implemented.")
-
                 # Update state
                 self.current_podcast_id = podcast_id
                 self.current_episode_guid = episode_guid
@@ -778,10 +806,16 @@ class PlayerPodcast:
 
             # Play via MPD
             logger.info(f"Playing episode: {episode['title']}")
-            with self.lock:
-                # Use playermpd's play_single method to play the URL
-                plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
 
+            # Phase 2: claim the active-player slot before driving
+            # playback — pauses+stops any other backend that was active.
+            self._activate_podcast()
+
+            # Phase 1 follow-up #2: cross-plugin call runs WITHOUT
+            # ``self.lock``. Lock reacquired below for state mutations.
+            plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+
+            with self.lock:
                 # Update state
                 self.current_podcast_id = podcast_id
                 self.current_episode_guid = episode_guid
@@ -911,8 +945,11 @@ class PlayerPodcast:
     def stop(self):
         """Stop podcast playback"""
         try:
+            # Phase 1 follow-up #2: cross-plugin call runs WITHOUT
+            # ``self.lock``. State mutations are done in a second
+            # critical section below.
+            plugs.call('player', 'ctrl', 'stop')
             with self.lock:
-                plugs.call('player', 'ctrl', 'stop')
                 self.playback_active = False
                 self.current_episode_metadata = None
                 self.current_podcast_metadata = None
@@ -1124,22 +1161,27 @@ class PlayerPodcast:
         if self.position_thread.is_alive():
             self.position_thread.join(timeout=5)
 
-        # Final position save if playing
+        # Final position save if playing.
+        # Phase 1 follow-up #2: snapshot under the lock, release, then
+        # do the cross-plugin call. update_episode_position writes
+        # state but does not touch self.lock — safe to call from here.
         with self.lock:
-            if self.playback_active and self.current_episode_guid:
-                try:
-                    mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
-                    if mpd_status:
-                        elapsed = float(mpd_status.get('elapsed', 0))
-                        duration = float(mpd_status.get('duration', 0))
-                        self.state_manager.update_episode_position(
-                            self.current_episode_guid,
-                            elapsed,
-                            duration
-                        )
-                        logger.info(f"Final position saved: {elapsed}s")
-                except Exception as e:
-                    logger.error(f"Final position save failed: {e}")
+            should_save = self.playback_active and self.current_episode_guid
+            episode_guid = self.current_episode_guid
+        if should_save:
+            try:
+                mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
+                if mpd_status:
+                    elapsed = float(mpd_status.get('elapsed', 0))
+                    duration = float(mpd_status.get('duration', 0))
+                    self.state_manager.update_episode_position(
+                        episode_guid,
+                        elapsed,
+                        duration
+                    )
+                    logger.info(f"Final position saved: {elapsed}s")
+            except Exception as e:
+                logger.error(f"Final position save failed: {e}")
 
         # Save episode cache metadata
         if self.episode_downloader:
@@ -1162,6 +1204,18 @@ def initialize():
     global player_ctrl
     player_ctrl = PlayerPodcast()
     plugs.register(player_ctrl, name='ctrl')
+
+    # Register with the player coordinator so cross-backend handoffs
+    # (Spotify/MPD claiming the active slot) pause then stop the
+    # podcast cleanly before the new backend takes over. pause(1)
+    # delegates to MPD's pause, preserving the resume position which
+    # the position-tracking thread persists to disk.
+    get_coordinator().register(
+        name='podcast',
+        pause_fn=lambda: player_ctrl.pause(1),
+        stop_fn=player_ctrl.stop,
+    )
+
     logger.info("Podcast player plugin registered as 'playerpodcast.ctrl'")
 
 

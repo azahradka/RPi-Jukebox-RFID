@@ -91,6 +91,7 @@ import functools
 import json
 from pathlib import Path
 import components.player
+from components.player.coordinator import get_coordinator
 import jukebox.cfghandler
 import jukebox.utils as utils
 from jukebox.utils.atomic_io import atomic_write_json_safe
@@ -302,13 +303,16 @@ class PlayerMPD:
         return value
 
     def _activate_mpd(self):
-        """Stop Spotify and claim active player so only MPD publishes status."""
-        if components.player.get_active_player() != 'mpd':
-            try:
-                plugs.call('player_spotify', 'ctrl', 'stop')
-            except Exception as e:
-                logger.debug(f"Could not stop Spotify: {e}")
-            components.player.set_active_player('mpd')
+        """Claim the active-player slot via the coordinator.
+
+        The coordinator runs the outgoing backend's pause-then-stop
+        (so Spotify's resume position is preserved before its session
+        is torn down), bounded by a 5s timeout. Idempotent when MPD
+        is already current.
+        """
+        coordinator = get_coordinator()
+        with coordinator.activate('mpd'):
+            pass
 
     def _mpd_status_poll(self):
         """
@@ -372,7 +376,7 @@ class PlayerMPD:
 
             published_snapshot = dict(self.mpd_status)
 
-        if components.player.get_active_player() == 'mpd':
+        if get_coordinator().current() == 'mpd':
             publishing.get_publisher().send('playerstatus', published_snapshot)
 
     # MPD can play absolute paths but can find songs in its database only by relative path
@@ -895,6 +899,15 @@ def initialize():
     global player_ctrl
     player_ctrl = PlayerMPD()
     plugs.register(player_ctrl, name='ctrl')
+
+    # Register with the player coordinator so cross-backend handoffs
+    # (Spotify/podcast claiming the active slot) pause then stop MPD
+    # cleanly before the new backend takes over.
+    get_coordinator().register(
+        name='mpd',
+        pause_fn=lambda: player_ctrl.pause(1),
+        stop_fn=player_ctrl.stop,
+    )
 
     global play_card_callbacks
     play_card_callbacks = PlayContentCallbacks[PlayCardState]('play_card_callbacks', logger, context=player_ctrl.mpd_lock)
