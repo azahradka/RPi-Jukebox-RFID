@@ -202,10 +202,48 @@ class PlayerSpotify:
             logger.error(f"Device discovery failed: {e}")
 
     def _ensure_device(self):
-        """Ensure device is available, rediscover if needed"""
+        """Ensure device is available, rediscover if needed.
+
+        Single-attempt discovery. For first-activation paths (cold
+        ``play_card``), use :meth:`_ensure_device_for_activation` so the
+        caller gets a bounded retry and a clear error on timeout.
+        """
         if not self.player_status.get('device_id'):
             self._discover_device()
         return self.player_status.get('device_id') is not None
+
+    def _ensure_device_for_activation(self, timeout: float = 5.0):
+        """Block up to ``timeout`` seconds for a librespot device to appear.
+
+        Called from ``play_card`` (and other first-activation entry points)
+        so the user-visible action either lands on a real device within
+        5 s or raises a recognisable error. The status thread's lazy
+        discovery path stays in place for steady-state polling, but it's
+        no longer the *only* route to populate ``device_id`` — a cold
+        ``play_card`` after a librespot restart used to silently no-op
+        because ``_ensure_device`` returned False and ``play_content`` bailed.
+
+        Returns ``True`` if a device id is present (already or newly found),
+        ``False`` if the timeout expired with no device.
+        """
+        if self.player_status.get('device_id'):
+            return True
+        deadline = time.monotonic() + max(0.0, timeout)
+        # Probe at modest intervals so a restarted librespot has a chance to
+        # register. spotipy.devices() has its own 10s request timeout but
+        # usually returns within ~200ms.
+        attempt_interval = 0.5
+        while True:
+            self._discover_device()
+            if self.player_status.get('device_id'):
+                return True
+            if time.monotonic() >= deadline:
+                logger.error(
+                    f"Spotify device '{self.device_name}' did not appear within "
+                    f"{timeout:.1f}s. Is librespot running?"
+                )
+                return False
+            time.sleep(attempt_interval)
 
     def _restart_librespot_with_token(self):
         """Restart librespot with the current access token.
@@ -931,9 +969,16 @@ class PlayerSpotify:
         try:
             self._require_client()
             self._refresh_token_if_needed()
-            if not self._ensure_device():
-                logger.error("No Spotify device available")
-                return
+            # Activation paths must block briefly (up to 5 s) for librespot to
+            # register the device — otherwise a cold ``play_card`` after a
+            # restart silently no-ops because the status-thread lazy probe
+            # hasn't run yet.
+            if not self._ensure_device_for_activation(timeout=5.0):
+                raise SpotifyException(
+                    http_status=503, code=-1,
+                    msg=f"Spotify device '{self.device_name}' not available "
+                        "(timed out waiting for librespot)"
+                )
 
             logger.info(f"Playing content: {uri}")
 
