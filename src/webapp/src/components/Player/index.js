@@ -14,7 +14,7 @@ import Volume from './volume';
 
 import AppSettingsContext from '../../context/appsettings/context';
 import PlayerContext from '../../context/player/context';
-import PubSubContext from '../../context/pubsub/context';
+import useSubscription from '../../hooks/useSubscription';
 import request from '../../utils/request';
 
 const Player = () => {
@@ -31,25 +31,25 @@ const Player = () => {
 
   const { show_covers } = settings;
 
-  // Subscribe to podcast download events
-  const { state: pubsubState } = useContext(PubSubContext);
+  // Subscribe to podcast download events via per-topic hooks. Phase 4
+  // re-render fix: previously the whole pubsub state object was pulled in,
+  // forcing this Player tree to re-render on every unrelated push.
+  const downloadStarted = useSubscription('podcast.download_started');
+  const downloadProgressEvent = useSubscription('podcast.download_progress');
+  const downloadCompleted = useSubscription('podcast.download_completed');
+  const downloadFailed = useSubscription('podcast.download_failed');
 
   useEffect(() => {
-    const downloadStarted = pubsubState['podcast.download_started'];
-    const downloadProgress = pubsubState['podcast.download_progress'];
-    const downloadCompleted = pubsubState['podcast.download_completed'];
-    const downloadFailed = pubsubState['podcast.download_failed'];
-
     if (downloadStarted) {
       setDownloadProgress({
         status: 'downloading',
         percent: 0,
         title: downloadStarted.episode_title
       });
-    } else if (downloadProgress) {
+    } else if (downloadProgressEvent) {
       setDownloadProgress(prev => ({
         ...prev,
-        percent: downloadProgress.percent || 0
+        percent: downloadProgressEvent.percent || 0
       }));
     } else if (downloadCompleted) {
       setDownloadProgress({
@@ -66,12 +66,7 @@ const Player = () => {
       // Clear after 3 seconds
       setTimeout(() => setDownloadProgress(null), 3000);
     }
-  }, [
-    pubsubState['podcast.download_started'],
-    pubsubState['podcast.download_progress'],
-    pubsubState['podcast.download_completed'],
-    pubsubState['podcast.download_failed']
-  ]);
+  }, [downloadStarted, downloadProgressEvent, downloadCompleted, downloadFailed]);
 
   useEffect(() => {
     console.log('Player useEffect - file:', file, 'coverart_url:', coverart_url);

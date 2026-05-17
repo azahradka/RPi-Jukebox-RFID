@@ -17,14 +17,20 @@ const ShowCovers = () => {
   const {
     settings,
     setSettings,
+    refresh,
   } = useContext(AppSettingsContext);
 
   const {
     show_covers,
   } = settings;
 
+  // Phase 4: after a save we ``refresh()`` so the UI reflects the
+  // persisted server state rather than only the locally-optimistic
+  // update. ``setSettings`` is still called first so the toggle feels
+  // immediate while ``refresh()`` resolves in the background.
   const updateShowCoversSetting = async (show_covers) => {
     await request('setAppSettings', { settings: { show_covers }});
+    if (refresh) await refresh();
   }
 
   const handleSwitch = (event) => {

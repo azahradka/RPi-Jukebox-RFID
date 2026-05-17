@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -9,16 +9,14 @@ import {
 } from '@mui/material';
 
 import BatteryIcon from '../helpers/battery-icon';
-import PubSubContext from '../../../context/pubsub/context';
+import useSubscription from '../../../hooks/useSubscription';
 import { pluginIsLoaded } from '../../../utils/utils';
 
 const StatusBattery = () => {
   const { t } = useTranslation();
 
-  const { state: {
-    'core.plugins.loaded': plugins,
-    'batt_status': { soc, charging } = {}
-  } } = useContext(PubSubContext);
+  const plugins = useSubscription('core.plugins.loaded');
+  const { soc, charging } = useSubscription('batt_status') || {};
 
   const [batteryPluginAvaialble, setBatteryPluginAvailability] = useState(false);
 

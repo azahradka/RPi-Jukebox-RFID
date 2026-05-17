@@ -3,15 +3,14 @@ import { omit } from 'ramda';
 import { useTranslation } from 'react-i18next';
 
 import PubSubContext from '../../context/pubsub/context';
+import useSubscription from '../../hooks/useSubscription';
 import CardsForm from './form';
 import { useLocation } from 'react-router';
 
 const CardsRegister = () => {
   const { t } = useTranslation();
-  const {
-    state: { 'rfid.card_id': swipedCardId },
-    setState
-  } = useContext(PubSubContext);
+  const { setState } = useContext(PubSubContext);
+  const swipedCardId = useSubscription('rfid.card_id');
   const location = useLocation();
   const locationState = location.state;
   const registerCard = locationState?.registerCard;

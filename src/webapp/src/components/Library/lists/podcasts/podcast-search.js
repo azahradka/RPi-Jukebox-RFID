@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Box,
@@ -17,6 +17,7 @@ import AddIcon from '@mui/icons-material/Add';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 
 import request from '../../../../utils/request';
+import useDebounce from '../../../../hooks/useDebounce';
 
 const PodcastSearch = ({ isSelecting, onSelectPodcast }) => {
   const { t } = useTranslation();
@@ -65,6 +66,16 @@ const PodcastSearch = ({ isSelecting, onSelectPodcast }) => {
     performSearch(searchQuery);
   };
 
+  // Phase 4: 300ms debounce on typed input so the iTunes search RPC
+  // doesn't fire on every keystroke. The submit button + Enter key
+  // still trigger an immediate search via ``handleSearchSubmit``.
+  const debouncedQuery = useDebounce(searchQuery, 300);
+  useEffect(() => {
+    if (debouncedQuery && debouncedQuery.trim().length >= 2) {
+      performSearch(debouncedQuery);
+    }
+  }, [debouncedQuery, performSearch]);
+
   const handleSelectPodcast = (podcast) => {
     if (onSelectPodcast) {
       onSelectPodcast(podcast);
@@ -98,7 +109,11 @@ const PodcastSearch = ({ isSelecting, onSelectPodcast }) => {
       </form>
 
       {isSearching && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+        <Box
+          sx={{ display: 'flex', justifyContent: 'center', py: 4 }}
+          data-testid="podcast-search-loading"
+          aria-label={t('podcasts.search.loading', 'Searching podcasts')}
+        >
           <CircularProgress />
         </Box>
       )}
