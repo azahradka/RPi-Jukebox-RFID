@@ -124,6 +124,40 @@ class JukeBox:
         print(msg)
         logger.info(msg)
 
+    def _validate_critical_plugins(self, pack_ok, plugins_named):
+        """Check that critical plugins loaded; exit / degrade accordingly.
+
+        :param pack_ok: collection of successfully loaded plugin aliases
+            (from ``get_all_loaded_packages``). May be ``None`` if the
+            misc plugin itself failed to load.
+        :param plugins_named: ``modules.named`` mapping from ``jukebox.yaml``
+            (alias → directory). Used to identify what *should* have
+            loaded.
+        """
+        # Defensive: if the misc plugin failed, ``pack_ok`` is None / falsy.
+        loaded = set(pack_ok) if pack_ok else set()
+
+        # publishing is the hard requirement — drop it and the UI goes dark.
+        if 'publishing' not in loaded:
+            msg = ("CRITICAL: 'publishing' plugin not loaded; status "
+                   "updates will not reach the UI. Exiting.")
+            print(msg)
+            logger.critical(msg)
+            sys.exit(2)
+
+        # Soft requirements: log ERROR so they're visible but keep going.
+        # 'player' is the alias for the default MPD player; without it,
+        # local audio playback is dead. 'rfid' is the reader; without it,
+        # card swipes are dead. The system can still serve the WebUI for
+        # diagnostics in either degraded mode.
+        for alias in ('player', 'rfid'):
+            if alias in plugins_named and alias not in loaded:
+                logger.error(
+                    f"Critical plugin '{alias}' (module "
+                    f"'{plugins_named[alias]}') failed to load. "
+                    f"Starting in degraded mode."
+                )
+
     def run(self):
         time_start = time.time_ns()
 
@@ -145,6 +179,19 @@ class JukeBox:
         publishing.get_publisher().send('core.plugins.error', pack_error)
         publishing.get_publisher().send('core.started_at', time.ctime(self._start_time))
         publishing.get_publisher().send('core.git_state', self._git_state)
+
+        # Validate critical plugins (Phase 1, fix #6). ``load_all_named``
+        # runs with ``ignore_errors=True`` so the daemon happily boots
+        # into a broken state when a critical component fails. Split
+        # components into two tiers:
+        #
+        #   * publishing — without this, status updates the UI listens
+        #     on are silently dropped. Exit non-zero so systemd surfaces
+        #     the failure and operators notice.
+        #   * player + rfid — degraded modes. Log ERROR so the WebUI
+        #     log viewer and ``errors.log`` show them, but keep running
+        #     so the rest of the system remains usable.
+        self._validate_critical_plugins(pack_ok, plugins_named)
 
         # ps = plugin.summarize()
         # for k, v in ps.items():
