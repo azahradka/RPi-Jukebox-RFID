@@ -123,7 +123,7 @@ import misc
 
 from .playcontentcallback import PlayContentCallbacks, PlayCardState
 from .coverart_cache_manager import CoverartCacheManager
-from .state_store import MPDStateStore
+from .state_store import MPDStateStore, SwipeDecision, decide_swipe
 from .mpd_client import MPDClientWrapper
 
 logger = logging.getLogger('jb.PlayerMPD')
@@ -677,15 +677,25 @@ class PlayerMPD:
         # after reboot of the last-played card plays it (instead of
         # being misread as a 2nd swipe). ``last_played_folder`` is
         # preserved across reboots for the resume / replay use case.
-        last_swiped = self.state_store.last_swiped_folder()
-        logger.debug(f"last_swiped_folder = {last_swiped!r}, folder = {folder!r}")
-        is_second_swipe = bool(last_swiped) and last_swiped == folder
+        #
+        # The decision itself lives in ``decide_swipe`` (state_store.py)
+        # — a pure function over (store, folder, second_swipe_action) —
+        # so the four behavioural scenarios (first / repeat-same /
+        # different / post-reboot) are unit-testable without booting
+        # MPD or the plugin system. ``play_card`` owns the *mutation*
+        # (``set_last_swiped_folder``) so the decision function stays
+        # side-effect-free.
+        decision = decide_swipe(self.state_store, folder, self.second_swipe_action)
+        logger.debug(
+            f"last_swiped_folder = {self.state_store.last_swiped_folder()!r}, "
+            f"folder = {folder!r}, decision = {decision.value}"
+        )
 
         # Record this swipe regardless of outcome. The marker survives
         # within a session; the store clears it on next startup.
         self.state_store.set_last_swiped_folder(folder)
 
-        if self.second_swipe_action is not None and is_second_swipe:
+        if decision is SwipeDecision.SECOND_TOGGLE:
             logger.debug('Calling second swipe action')
 
             # run callbacks before second_swipe_action is invoked

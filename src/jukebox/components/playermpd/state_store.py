@@ -34,6 +34,7 @@ See ``play_card`` for the user-visible behaviour.
 from __future__ import annotations
 
 import copy
+import enum
 import json
 import logging
 import os
@@ -44,6 +45,68 @@ from jukebox.utils.atomic_io import atomic_write_json_safe
 
 
 logger = logging.getLogger('jb.PlayerMPD.state_store')
+
+
+class SwipeDecision(enum.Enum):
+    """Result of the play_card swipe-decision seam.
+
+    Returned by :func:`decide_swipe` and consumed by
+    :meth:`PlayerMPD.play_card`. Encodes the *intent* of the swipe so the
+    caller can dispatch to ``play_folder`` (FIRST) or the configured
+    ``second_swipe_action`` (SECOND_TOGGLE) without re-deriving the rule.
+    """
+
+    #: Treat as a fresh swipe — call ``play_folder``.
+    FIRST = 'first'
+    #: Treat as a repeat swipe of the same card — call the configured
+    #: ``second_swipe_action`` (pause/toggle/replay/...).
+    SECOND_TOGGLE = 'second_toggle'
+
+
+def decide_swipe(
+    state_store: 'MPDStateStore',
+    folder: str,
+    second_swipe_action: Optional[Any] = None,
+) -> SwipeDecision:
+    """Decide whether ``folder`` is a first or second swipe.
+
+    This is the *pure decision* extracted from :meth:`PlayerMPD.play_card`
+    (Phase 3a). It reads ``last_swiped_folder`` from ``state_store`` and
+    compares against the incoming ``folder``. It does **not** mutate the
+    store — ``play_card`` updates the swipe marker after consulting this
+    function so the decision is observable in isolation.
+
+    Decision rule (regression-locked by ``test_decide_swipe.py``):
+
+    * ``last_swiped_folder`` is empty (fresh boot, or after
+      ``clear_last_swiped_folder``) → FIRST.
+    * ``last_swiped_folder`` differs from ``folder`` (user swiped a
+      different card) → FIRST.
+    * ``last_swiped_folder == folder`` AND ``second_swipe_action`` is
+      configured → SECOND_TOGGLE.
+    * ``last_swiped_folder == folder`` AND ``second_swipe_action`` is
+      ``None`` (feature disabled) → FIRST.
+
+    The post-reboot scenario falls out of the first bullet: the store
+    clears ``last_swiped_folder`` on init (see
+    :meth:`MPDStateStore.clear_last_swiped_folder` and ``PlayerMPD.__init__``)
+    so the first swipe after reboot is always FIRST, even if the card
+    happens to match ``last_played_folder``.
+
+    :param state_store: Live :class:`MPDStateStore` whose
+        ``last_swiped_folder()`` is the discriminator.
+    :param folder: The folder being swiped (an RFID payload).
+    :param second_swipe_action: Whatever ``PlayerMPD.second_swipe_action``
+        is — only its truthiness matters here. ``None`` (feature disabled)
+        forces FIRST on every swipe.
+    :returns: :class:`SwipeDecision`.
+    """
+    last_swiped = state_store.last_swiped_folder()
+    if not last_swiped or last_swiped != folder:
+        return SwipeDecision.FIRST
+    if second_swipe_action is None:
+        return SwipeDecision.FIRST
+    return SwipeDecision.SECOND_TOGGLE
 
 
 class MPDStateStore:
