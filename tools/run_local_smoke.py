@@ -29,18 +29,25 @@ and silently route subsequent scenarios at the wrong tree.
 
 Exit code is 0 on full pass, non-zero on the first failure with a
 human-readable diff to stderr.
+
+Item 3 cleanup: prior to the plug-time-coupling refactor each plugin
+``__init__.py`` ran ``@plugs.initialize`` / ``@plugs.register`` at
+module-import time, which forced this harness to use
+``importlib.util.spec_from_file_location`` plus sys.modules stubs to
+load the extracted leaf modules. After the refactor every plugin
+defers its registrations into ``init_plugin()``, so direct
+``from components.X.Y import ...`` works and the ~80 LoC of
+importlib gymnastics is gone.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import sys
 import tempfile
 import time
 import traceback
-import types
 from pathlib import Path
 from typing import Callable, List, Tuple
 
@@ -50,94 +57,15 @@ _JUKEBOX_SRC = _REPO_ROOT / 'src' / 'jukebox'
 if str(_JUKEBOX_SRC) not in sys.path:
     sys.path.insert(0, str(_JUKEBOX_SRC))
 
-
-# ----------------------------------------------------------------------
-# Submodule loader: mirror the test/components/playermpd/conftest.py
-# pattern. The decision seams we want to exercise live in submodules
-# whose package ``__init__.py`` triggers ``@plugs.initialize`` at
-# import time, which requires the full daemon plugin registry. We load
-# the submodule file directly under its canonical dotted name and
-# stub a minimal parent package so relative imports resolve.
-# ----------------------------------------------------------------------
-
-
-def _ensure_jukebox_utils_stub() -> None:
-    """Install stub ``jukebox`` and ``jukebox.utils`` packages.
-
-    Idempotent. After this, leaf modules under ``jukebox.utils`` can be
-    loaded by full path without executing the real ``__init__.py`` of
-    either package (which would drag in the entire daemon-side
-    plumbing).
-    """
-    if 'jukebox' not in sys.modules:
-        jb = types.ModuleType('jukebox')
-        jb.__path__ = [str(_JUKEBOX_SRC / 'jukebox')]
-        sys.modules['jukebox'] = jb
-    if 'jukebox.utils' not in sys.modules:
-        ju = types.ModuleType('jukebox.utils')
-        ju.__path__ = [str(_JUKEBOX_SRC / 'jukebox' / 'utils')]
-        sys.modules['jukebox.utils'] = ju
-
-
-def _ensure_paths_module():
-    """Load ``jukebox.utils.paths`` under its canonical name and return it."""
-    _ensure_jukebox_utils_stub()
-    qual = 'jukebox.utils.paths'
-    if qual in sys.modules:
-        return sys.modules[qual]
-    spec = importlib.util.spec_from_file_location(
-        qual,
-        _JUKEBOX_SRC / 'jukebox' / 'utils' / 'paths.py',
-    )
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[qual] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def _install_atomic_io_module() -> None:
-    """Make ``jukebox.utils.atomic_io`` importable without booting jukebox.utils.
-
-    ``jukebox/utils/__init__.py`` pulls subprocess + RPC helpers at
-    import time. The smoke harness only needs ``atomic_write_json_safe``
-    for the MPD state store, so we install the leaf module directly
-    under its canonical dotted name with stub parents in sys.modules.
-    """
-    qual = 'jukebox.utils.atomic_io'
-    if qual in sys.modules:
-        return
-    _ensure_jukebox_utils_stub()
-    spec = importlib.util.spec_from_file_location(
-        qual,
-        _JUKEBOX_SRC / 'jukebox' / 'utils' / 'atomic_io.py',
-    )
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[qual] = mod
-    spec.loader.exec_module(mod)
-
-
-def _load_submodule(qualname: str, file_path: Path):
-    """Load ``qualname`` from ``file_path`` without executing parent __init__.
-
-    Idempotent: subsequent calls return the already-loaded module.
-    """
-    pkg_name = qualname.rsplit('.', 1)[0]
-    if pkg_name and pkg_name not in sys.modules:
-        parent_qual = pkg_name.rsplit('.', 1)[0]
-        if parent_qual and parent_qual not in sys.modules:
-            sys.modules[parent_qual] = types.ModuleType(parent_qual)
-        stub = types.ModuleType(pkg_name)
-        stub.__path__ = [str(file_path.parent)]
-        sys.modules[pkg_name] = stub
-
-    if qualname in sys.modules:
-        return sys.modules[qualname]
-
-    spec = importlib.util.spec_from_file_location(qualname, file_path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[qualname] = mod
-    spec.loader.exec_module(mod)
-    return mod
+# Direct imports — Item 3 made every component package import-clean.
+from components.playermpd.state_store import (  # noqa: E402
+    MPDStateStore, SwipeDecision, decide_swipe,
+)
+from components.playerpodcast.playback_state import (  # noqa: E402
+    SecondSwipeDecision, decide_second_swipe,
+)
+from components.player.coordinator import PlayerCoordinator  # noqa: E402
+from jukebox.utils import paths as paths_mod  # noqa: E402
 
 
 # ----------------------------------------------------------------------
@@ -173,7 +101,6 @@ def _new_scenario_home() -> Tuple[Path, tempfile.TemporaryDirectory]:
     (home / 'src' / 'jukebox').mkdir(parents=True)
     (home / 'shared' / 'settings').mkdir(parents=True)
     os.environ['PHONIEBOX_HOME'] = str(home)
-    paths_mod = _ensure_paths_module()
     paths_mod.reset_phoniebox_home_cache()
     return home, tmpdir
 
@@ -186,15 +113,6 @@ def scenario_mpd_swipes() -> None:
     """Real ``decide_swipe`` over a real ``MPDStateStore``."""
     home, _td = _new_scenario_home()
     state_file = home / 'shared' / 'settings' / 'mpd_state.json'
-
-    _install_atomic_io_module()
-    state_store = _load_submodule(
-        'components.playermpd.state_store',
-        _JUKEBOX_SRC / 'components' / 'playermpd' / 'state_store.py',
-    )
-    MPDStateStore = state_store.MPDStateStore
-    SwipeDecision = state_store.SwipeDecision
-    decide_swipe = state_store.decide_swipe
 
     store = MPDStateStore(str(state_file))
     second_swipe_action = object()  # truthy sentinel; not None
@@ -235,26 +153,10 @@ def scenario_mpd_swipes() -> None:
     # so a reversion of the init-time clear in ``PlayerMPD.__init__``
     # would still pass this scenario. The decision-function
     # (``decide_swipe``) regression IS locked by the assert below; the
-    # init-time wiring is NOT.
-    #
-    # Tried & decided against:
-    #   * Instantiating ``PlayerMPD`` directly — its ``__init__``
-    #     requires a live ``cfg`` handler, opens a TCP socket to MPD,
-    #     starts background threads, and resolves multiple cfg-driven
-    #     callable dictionaries. The setup needed to fake all that
-    #     here would dwarf the harness itself and reintroduce the
-    #     parallel-implementation smell Phase 3a explicitly avoided.
-    #   * A thin ``PlayerMPDInitProbe`` wrapper — would still have to
-    #     mirror the production init logic line-for-line, which is
-    #     exactly what Phase 3a deleted.
-    #
-    # Production coverage for the init-time clear lives in
+    # init-time wiring is NOT. Production coverage for the init-time
+    # clear lives in
     # ``test/components/playermpd/test_playermpd_second_swipe.py``
-    # (specifically ``test_scenario_3_first_swipe_after_reboot_plays_not_pauses``,
-    # which exercises ``clear_last_swiped_folder`` over a realistic
-    # state-store snapshot). When Phase Item 3 (plug-time-coupling
-    # refactor) lands and makes PlayerMPD safer to construct in
-    # isolation, revisit this scenario and exercise __init__ directly.
+    # (``test_scenario_3_first_swipe_after_reboot_plays_not_pauses``).
     store.set_last_played_folder('audiofolders/Album-A')
     store.set_last_swiped_folder('audiofolders/Album-A')
     store.save()
@@ -262,7 +164,6 @@ def scenario_mpd_swipes() -> None:
     _check(rebooted.last_played_folder() == 'audiofolders/Album-A',
            'reboot: last_played should persist across re-instantiation')
     # Mirror PlayerMPD.__init__: clear the swipe marker, leave last_played.
-    # See limitation note above.
     rebooted.clear_last_swiped_folder()
     d5 = decide_swipe(rebooted, 'audiofolders/Album-A', second_swipe_action)
     _check(d5 is SwipeDecision.FIRST,
@@ -281,14 +182,7 @@ def scenario_mpd_swipes() -> None:
 
 def scenario_podcast_swipes() -> None:
     """Real ``decide_second_swipe`` over realistic state snapshots."""
-    home, _td = _new_scenario_home()
-
-    pb = _load_submodule(
-        'components.playerpodcast.playback_state',
-        _JUKEBOX_SRC / 'components' / 'playerpodcast' / 'playback_state.py',
-    )
-    SecondSwipeDecision = pb.SecondSwipeDecision
-    decide_second_swipe = pb.decide_second_swipe
+    _new_scenario_home()
 
     # Fresh swipe: nothing playing, no current feed.
     d1 = decide_second_swipe(
@@ -339,12 +233,6 @@ def scenario_podcast_swipes() -> None:
 def scenario_coordinator_handoff() -> None:
     """Real ``PlayerCoordinator`` with three fake backends."""
     _new_scenario_home()
-
-    coord_mod = _load_submodule(
-        'components.player.coordinator',
-        _JUKEBOX_SRC / 'components' / 'player' / 'coordinator.py',
-    )
-    PlayerCoordinator = coord_mod.PlayerCoordinator
 
     coord = PlayerCoordinator()
     calls: List[Tuple[str, str]] = []
@@ -401,22 +289,17 @@ def scenario_coordinator_handoff() -> None:
 
 def scenario_paths_cache_reset() -> None:
     """``reset_phoniebox_home_cache`` actually invalidates the LRU cache."""
-    paths_mod = _ensure_paths_module()
-    get_phoniebox_home = paths_mod.get_phoniebox_home
-    reset_phoniebox_home_cache = paths_mod.reset_phoniebox_home_cache
-    resolve_under_home = paths_mod.resolve_under_home
-
     home1, _td1 = _new_scenario_home()
-    p1 = get_phoniebox_home()
+    p1 = paths_mod.get_phoniebox_home()
     _check(p1 == home1.resolve(),
            f"home1: expected {home1}, got {p1}")
-    cfg1 = resolve_under_home('shared/settings/jukebox.yaml')
+    cfg1 = paths_mod.resolve_under_home('shared/settings/jukebox.yaml')
     _check(str(cfg1).startswith(str(home1.resolve())),
            f"resolve under home1 should anchor: {cfg1}")
 
     # New scenario: env var changes but cache must be cleared first.
     home2, _td2 = _new_scenario_home()  # already calls reset
-    p2 = get_phoniebox_home()
+    p2 = paths_mod.get_phoniebox_home()
     _check(p2 == home2.resolve(),
            f"home2: cache should have been reset; got {p2} vs {home2}")
 
@@ -424,11 +307,11 @@ def scenario_paths_cache_reset() -> None:
     # confirm reset_phoniebox_home_cache() is what clears it.
     os.environ['PHONIEBOX_HOME'] = str(home1)
     # No reset → expect stale home2.
-    p_stale = get_phoniebox_home()
+    p_stale = paths_mod.get_phoniebox_home()
     _check(p_stale == home2.resolve(),
            f"without reset: should still see home2 from cache; got {p_stale}")
-    reset_phoniebox_home_cache()
-    p_fresh = get_phoniebox_home()
+    paths_mod.reset_phoniebox_home_cache()
+    p_fresh = paths_mod.get_phoniebox_home()
     _check(p_fresh == home1.resolve(),
            f"after reset: should pick up home1; got {p_fresh}")
 
@@ -456,10 +339,7 @@ def main() -> int:
         # the previous one doesn't bleed in if the scenario forgot to
         # call _new_scenario_home itself.
         os.environ.pop('PHONIEBOX_HOME', None)
-        try:
-            _ensure_paths_module().reset_phoniebox_home_cache()
-        except Exception:
-            pass
+        paths_mod.reset_phoniebox_home_cache()
         try:
             scn.fn()
             print(f"  PASS  {scn.name}  ({(time.time() - s_start) * 1000:.0f}ms)",
