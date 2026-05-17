@@ -56,24 +56,23 @@ def initialize():
 def play(filename):
     """Play the jingle using the configured jingle service
 
+    Phase 6 / Phase 3b FU#1: the volume get/set RPCs are kept inside
+    the plugs lock (they're quick, and serialising them with concurrent
+    set_volume calls is the whole point of the lock). The blocking
+    WAV playback (10-60 s for some jingles) is wrapped in
+    :func:`jukebox.plugs.drop_module_lock_for_blocking_call` so other
+    RPC traffic — status publishers, RFID swipe dispatch, Web UI calls —
+    is not starved. Previously, this method held the plugs RLock across
+    the full playback, which led ``playerpodcast`` to ship a direct-ALSA
+    workaround (``_play_wav_direct``). With the lock-release here, that
+    workaround is no longer required to avoid RPC starvation, though it
+    remains in podcast for separate latency reasons (see its docstring).
+
     > [!NOTE]
-    > This runs in a separate thread. And this may cause troubles
-    > when changing the volume level before
-    > and after the sound playback: There is nothing to prevent another
-    > thread from changing the volume and sink while playback happens
-    > and afterwards we change the volume back to where it was before!
-
-    There is no way around this dilemma except for not running the jingle as a
-    separate thread. Currently (as thread) even the RPC is started before the sound
-    is finished and the volume is reset to normal...
-
-    However: Volume plugin is loaded before jingle and sets the default
-    volume. No interference here. It can now only happen
-    if (a) through the RPC or (b) some other plugin the volume is changed. Okay, now
-    (a) let's hope that there is enough delay in the user requesting a volume change
-    (b) let's hope no other plugin wants to do that
-    (c) no bluetooth device connects during this time (and pulseaudio control is set to toggle_on_connect)
-    and take our changes with the threaded approach.
+    > This still runs in a separate thread and the volume-restore race
+    > the original docstring described is not new — another thread can
+    > change volume between our jingle-volume set and our restore. The
+    > pre-Phase-6 docstring's mitigations still apply.
     """
     global factory
     jingle_volume = cfg.getn('jingle', 'volume', default=None)
@@ -81,7 +80,10 @@ def play(filename):
     if jingle_volume is not None:
         active_volume = plugin.call_ignore_errors('volume', 'ctrl', 'get_volume')
         plugin.call_ignore_errors('volume', 'ctrl', 'set_volume', args=[jingle_volume])
-    factory.auto(filename).play(filename)
+    # Drop the plugs module lock around the blocking WAV playback.
+    # See _DropLockForBlockingCall docstring for rationale.
+    with plugin.drop_module_lock_for_blocking_call():
+        factory.auto(filename).play(filename)
     if jingle_volume is not None:
         plugin.call_ignore_errors('volume', 'ctrl', 'set_volume', args=[active_volume])
 

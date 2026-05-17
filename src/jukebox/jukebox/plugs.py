@@ -130,6 +130,51 @@ def _release_lock():
         _lock_module.release()
 
 
+class _DropLockForBlockingCall:
+    """Temporarily release the plugs module-level lock for a blocking call.
+
+    Phase 6 / Phase 3b FU#1: ``plugs.call`` holds the module-level RLock
+    across the entire callable. Plugins that genuinely block (e.g.
+    ``jingle.play`` writing a WAV via ALSA, ~10-60s) starve every other
+    RPC for that window — the status publisher, RFID swipe dispatch,
+    Web UI requests. RLock semantics don't help: other *threads* are
+    blocked, not the same thread re-entering.
+
+    A plugin that knows it's about to block on I/O can briefly drop the
+    plugs lock with::
+
+        from jukebox.plugs import drop_module_lock_for_blocking_call
+        with drop_module_lock_for_blocking_call():
+            do_blocking_io()
+
+    The RLock's recursion count for the current thread is fully released
+    on ``__enter__`` and restored on ``__exit__``. This uses
+    :meth:`threading.RLock._release_save` /
+    :meth:`threading.RLock._acquire_restore`, which are the same hooks
+    :class:`threading.Condition` relies on — public-API-adjacent.
+
+    > [!IMPORTANT]
+    > Only use this when the called code is reentrancy-safe and the
+    > blocking section does NOT need plugs-call serialisation. Volume
+    > sets etc. should happen BEFORE entering the drop, not inside it.
+    """
+
+    def __enter__(self):
+        # _release_save returns the saved state to restore later, and
+        # fully unwinds the RLock so other threads can acquire.
+        self._saved_state = _lock_module._release_save()  # type: ignore[attr-defined]
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _lock_module._acquire_restore(self._saved_state)  # type: ignore[attr-defined]
+        return False
+
+
+def drop_module_lock_for_blocking_call():
+    """Public context manager — see :class:`_DropLockForBlockingCall`."""
+    return _DropLockForBlockingCall()
+
+
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
