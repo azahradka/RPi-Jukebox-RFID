@@ -480,6 +480,31 @@ class PulseVolumeControl:
                 'sink_list': [s._asdict() for s in self._sink_list]}
 
     @plugin.tag
+    def get_active(self):
+        """Return a short human-readable label for the active audio sink.
+
+        Used by the Phase 7 daemon startup-summary helper
+        (``_summary_audio_sink``) to surface "which output is the box
+        actually using right now" in a single grep-friendly line. The
+        helper invokes ``volume.ctrl.get_active`` via the plugs registry
+        so its absence shows up as ``<unavailable>`` in the summary —
+        which is exactly what was happening before this method was
+        added (regression surfaced 2026-05-17 on the RPi test box).
+
+        Returns the configured alias (e.g. ``'speaker'``) if available,
+        otherwise the raw PulseAudio sink name as a fallback. Returns
+        the literal string ``'<unknown>'`` if both are empty so the
+        startup banner never logs an empty value.
+        """
+        with pulse_monitor as pulse:
+            sink_alias, sink_name = self._get_outputs(pulse)
+        if sink_alias and sink_alias != 'Unset alias':
+            return sink_alias
+        if sink_name:
+            return sink_name
+        return '<unknown>'
+
+    @plugin.tag
     def publish_volume(self):
         """Publish (volume, mute)"""
         with pulse_monitor as pulse:

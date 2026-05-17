@@ -169,6 +169,9 @@ class JukeBox:
             from components.player.coordinator import get_coordinator
             return str(get_coordinator().current())
         except Exception as exc:
+            # Item 7 follow-up: emit WARN so operators see the helper
+            # failure in errors.log, not only in the INFO summary line.
+            logger.warning(f"Startup summary: active player lookup failed: {exc!r}")
             return f"<unavailable> ({exc!s})"
 
     def _summary_loaded_plugins(self):
@@ -176,6 +179,7 @@ class JukeBox:
             pack_ok = plugin.call_ignore_errors('misc', 'get_all_loaded_packages') or ()
             return f"{len(pack_ok)} = {', '.join(sorted(pack_ok))}"
         except Exception as exc:
+            logger.warning(f"Startup summary: loaded-plugins lookup failed: {exc!r}")
             return f"<unavailable> ({exc!s})"
 
     def _summary_rfid_readers(self):
@@ -183,6 +187,7 @@ class JukeBox:
             cfg_rfid = jukebox.cfghandler.get_handler('rfid')
             readers_cfg = cfg_rfid.getn('rfid', 'readers', default={})
         except Exception as exc:
+            logger.warning(f"Startup summary: RFID readers lookup failed: {exc!r}")
             return f"<unavailable> ({exc!s})"
 
         if not isinstance(readers_cfg, dict):
@@ -199,6 +204,7 @@ class JukeBox:
             current_sink = plugin.call_ignore_errors('volume', 'ctrl', 'get_active')
             return str(current_sink) if current_sink else "<unknown>"
         except Exception as exc:
+            logger.warning(f"Startup summary: audio sink lookup failed: {exc!r}")
             return f"<unavailable> ({exc!s})"
 
     def _log_startup_summary(self):
