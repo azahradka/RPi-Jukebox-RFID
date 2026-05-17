@@ -51,6 +51,11 @@ from .feed_manager import PodcastFeedManager
 from .episode_queue import EpisodeQueueManager
 from .state_manager import PodcastStateManager
 from .episode_downloader import EpisodeDownloadManager
+from .playback_state import (
+    SecondSwipeDecision,
+    build_queue_plan,
+    decide_second_swipe,
+)
 
 logger = logging.getLogger('jb.PlayerPodcast')
 cfg = jukebox.cfghandler.get_handler('jukebox')
@@ -572,31 +577,35 @@ class PlayerPodcast:
         try:
             logger.info(f"Playing podcast series: {feed_url}")
 
-            # Second tap detection: if the same podcast is actually playing,
-            # delegate to the configured second_swipe_action (default: toggle).
-            # Must verify MPD state to avoid stale playback_active flag.
-            #
-            # Snapshot state under the lock, then release before any
-            # cross-plugin RPC (``plugs.call``) or second-swipe handler.
-            # Holding ``self.lock`` across ``plugs.call`` blocks every
-            # status RPC into this plugin for the duration of the call,
-            # which can deadlock the UI if the cross-plugin call recurses
-            # back into the podcast player.
+            # Second tap detection - extracted to ``playback_state.
+            # decide_second_swipe`` so the decision matrix is testable
+            # in isolation. We still snapshot under the lock + release
+            # before the cross-plugin status RPC (Phase 1 fix #4 lock
+            # discipline; see ``decide_second_swipe`` docstring).
             with self.lock:
-                is_same_podcast = (
-                    self.playback_active and self.current_feed_url == feed_url
-                )
-            if is_same_podcast:
+                snap_active = self.playback_active
+                snap_feed_url = self.current_feed_url
+            # Only fetch MPD state if the snapshot suggests a possible
+            # second swipe - otherwise we waste a wire round-trip.
+            mpd_state = None
+            if snap_active and snap_feed_url == feed_url:
                 mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
                 mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
-                if mpd_state != 'stop':
-                    logger.info("Second tap detected, calling second_swipe_action")
-                    self.second_swipe_action()
-                    return
-                else:
-                    logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
-                    with self.lock:
-                        self.playback_active = False
+            decision = decide_second_swipe(
+                playback_active=snap_active,
+                current_feed_url=snap_feed_url,
+                incoming_feed_url=feed_url,
+                mpd_state=mpd_state,
+            )
+            if decision is SecondSwipeDecision.INVOKE_HANDLER:
+                logger.info("Second tap detected, calling second_swipe_action")
+                self.second_swipe_action()
+                return
+            if decision is SecondSwipeDecision.CLEAR_STALE_AND_RESTART:
+                logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                with self.lock:
+                    self.playback_active = False
+            # FRESH_START falls through to feed fetch + playback below.
 
             # Fetch feed
             feed_data = self.feed_manager.fetch_feed(feed_url)
@@ -610,9 +619,6 @@ class PlayerPodcast:
                 })
                 raise ValueError(error_msg)
 
-            podcast_id = feed_data['podcast_id']
-            episodes = feed_data['episodes']
-
             # Store podcast metadata for status display
             self.current_podcast_metadata = {
                 'title': feed_data.get('title', 'Unknown Podcast'),
@@ -620,51 +626,41 @@ class PlayerPodcast:
                 'image_url': feed_data.get('image_url', '')
             }
 
-            if not episodes:
-                logger.warning("No episodes found in feed")
-                return
-
-            # Add/update podcast subscription
-            self.state_manager.add_podcast(
-                podcast_id,
-                feed_url,
-                feed_data['title']
+            # Build the play plan (queue + resume) via the pure seam.
+            # build_queue_plan returns None if the feed is empty or the
+            # filter pipeline yields no playable episodes.
+            plan = build_queue_plan(
+                feed_data=feed_data,
+                queue_manager=self.queue_manager,
+                state_manager=self.state_manager,
             )
-
-            # Generate playable queue (auto-reset if all completed)
-            playable_episodes, was_reset = self.queue_manager.get_playable_queue(
-                episodes,
-                podcast_id
-            )
-
-            if not playable_episodes:
+            if plan is None:
                 logger.warning("No playable episodes")
                 return
 
-            # Check for resume
-            logger.debug(f"Checking for resume: "
-                          f"playable_episodes={len(playable_episodes)}, was_reset={was_reset}")
-            resume_info = self.queue_manager.find_resume_episode(playable_episodes)
-            logger.debug(f"resume_info={resume_info}")
-            start_index = 0
-            resume_position = 0
+            # Add/update podcast subscription now that we know we have
+            # something to play (avoids polluting state on empty feeds).
+            self.state_manager.add_podcast(
+                plan.podcast_id,
+                feed_url,
+                feed_data['title'],
+            )
 
-            if resume_info and not was_reset:
-                resume_episode, resume_index = resume_info
-                start_index = resume_index
-                resume_position = self.state_manager.get_resume_position(resume_episode['guid'])
-                logger.info(f"Found resume: episode_index={resume_index}, resume_position={resume_position}")
-                logger.info(f"Resuming from episode {resume_index + 1}/{len(playable_episodes)} "
-                           f"at {resume_position}s")
-            else:
-                logger.debug(f"No resume: resume_info={resume_info}, was_reset={was_reset}")
+            if plan.resume_position > 0:
+                logger.info(
+                    f"Resuming from episode {plan.start_index + 1}/"
+                    f"{len(plan.playable_episodes)} at {plan.resume_position}s"
+                )
 
-            # Play via MPD - start with the first (or resume) episode
-            episode_to_play = playable_episodes[start_index]
+            episode_to_play = plan.episode_to_play
+            podcast_id = plan.podcast_id
+            playable_episodes = plan.playable_episodes
+            start_index = plan.start_index
+            resume_position = plan.resume_position
+            episode_guid = episode_to_play['guid']
             logger.info(f"Playing episode at index {start_index}: {episode_to_play.get('title', 'Unknown')}")
 
             # Resolve playback URL (cached local file or CDN stream)
-            episode_guid = episode_to_play['guid']
             playback_url = self._resolve_playback_url(episode_to_play, resume_position)
 
             # Phase 2: claim the active-player slot before driving
@@ -744,30 +740,38 @@ class PlayerPodcast:
         try:
             logger.info(f"Playing specific episode: {episode_guid}")
 
-            # Second tap detection: if the same episode is actually playing,
-            # delegate to the configured second_swipe_action (default: toggle).
-            # Must verify MPD state to avoid stale playback_active flag.
-            #
-            # Snapshot the second-swipe condition under the lock, then
-            # release before calling out to ``plugs.call`` or the second-
-            # swipe handler. See ``play_podcast_series`` for the rationale.
+            # Second tap detection via the shared ``decide_second_swipe``
+            # seam, matching on (feed_url, episode_guid). See
+            # ``play_podcast_series`` for the rationale on the snapshot-
+            # release-call pattern.
             with self.lock:
-                is_same_episode = (
-                    self.playback_active
-                    and self.current_feed_url == feed_url
-                    and self.current_episode_guid == episode_guid
-                )
-            if is_same_episode:
+                snap_active = self.playback_active
+                snap_feed_url = self.current_feed_url
+                snap_guid = self.current_episode_guid
+            mpd_state = None
+            if (
+                snap_active
+                and snap_feed_url == feed_url
+                and snap_guid == episode_guid
+            ):
                 mpd_status = plugs.call('player', 'ctrl', 'playerstatus')
                 mpd_state = mpd_status.get('state', 'stop') if mpd_status else 'stop'
-                if mpd_state != 'stop':
-                    logger.info("Second tap detected, calling second_swipe_action")
-                    self.second_swipe_action()
-                    return
-                else:
-                    logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
-                    with self.lock:
-                        self.playback_active = False
+            decision = decide_second_swipe(
+                playback_active=snap_active,
+                current_feed_url=snap_feed_url,
+                incoming_feed_url=feed_url,
+                mpd_state=mpd_state,
+                current_episode_guid=snap_guid,
+                incoming_episode_guid=episode_guid,
+            )
+            if decision is SecondSwipeDecision.INVOKE_HANDLER:
+                logger.info("Second tap detected, calling second_swipe_action")
+                self.second_swipe_action()
+                return
+            if decision is SecondSwipeDecision.CLEAR_STALE_AND_RESTART:
+                logger.info("Podcast flag was active but MPD stopped, treating as first swipe")
+                with self.lock:
+                    self.playback_active = False
 
             # Fetch feed
             feed_data = self.feed_manager.fetch_feed(feed_url)
