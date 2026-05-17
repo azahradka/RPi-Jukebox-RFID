@@ -259,17 +259,44 @@ class PlayerPodcast:
         the coordinator's 5s stop timeout. Idempotent when podcast
         is already current.
 
-        Note: podcast plays *through* MPD, so when MPD is the
-        outgoing backend the coordinator will call MPD's stop_fn
-        (the cleanest baseline). The subsequent ``play_single`` call
-        then drives MPD with the new episode.
+        Phase 2 FU#2 decision: **podcast pins itself as the active
+        backend for the duration of an episode** (option (a) from the
+        meta-plan's two choices). The rationale:
+
+        * The user-facing model is "I tapped a podcast card; the
+          podcast is playing". ``coordinator.current()`` should match
+          that mental model so the UI gates podcast-specific status
+          rendering correctly, and the next cross-backend handoff
+          pauses+stops *podcast* (saving its resume position) rather
+          than MPD.
+        * Podcast plays *through* MPD's wire but the user-facing
+          backend is ``'podcast'``. Letting MPD's ``play_single``
+          run ``_activate_mpd()`` would race the coordinator back to
+          ``'mpd'``, and the next handoff (Spotify activation) would
+          pause+stop *MPD* instead of *podcast* - losing the resume
+          position the position-tracking thread persists.
+
+        To keep podcast pinned, every podcast operation that drives
+        MPD uses passive variants on playermpd
+        (``play_single_passive`` instead of ``play_single``;
+        ``pause(0)`` instead of ``play``) which do not call
+        ``_activate_mpd``. The user-facing handlers ``play()`` /
+        ``pause()`` / ``next()`` / ``prev()`` /
+        ``_toggle_playback()`` re-pin podcast first via this method
+        so any drift back to MPD self-heals on the next user
+        interaction.
         """
         with get_coordinator().activate('podcast'):
             pass
 
     def _toggle_playback(self):
-        """Toggle MPD playback state"""
+        """Toggle MPD playback state.
+
+        Re-pins podcast as active (Phase 2 FU#2 decision) before
+        delegating to MPD so the coordinator stays in sync with the
+        user-facing state."""
         try:
+            self._activate_podcast()
             plugs.call('player', 'ctrl', 'toggle')
             logger.info("Toggled podcast playback")
         except Exception as e:
@@ -291,7 +318,7 @@ class PlayerPodcast:
         # not the MPD wire — holding it across plugs.call would block
         # every status RPC into this plugin for the duration of the
         # call and risks recursive deadlocks.
-        plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+        plugs.call('player', 'ctrl', 'play_single_passive', args=(playback_url,))
 
         with self.lock:
             self.current_episode_guid = episode_guid
@@ -698,7 +725,7 @@ class PlayerPodcast:
             # value on success). Lock is reacquired below for state
             # mutations only.
             logger.info(f"Calling MPD play_single: {playback_url}")
-            plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+            plugs.call('player', 'ctrl', 'play_single_passive', args=(playback_url,))
             logger.info("MPD play_single succeeded")
 
             # TODO: Implement playlist queuing for multiple episodes
@@ -842,7 +869,7 @@ class PlayerPodcast:
 
             # Phase 1 follow-up #2: cross-plugin call runs WITHOUT
             # ``self.lock``. Lock reacquired below for state mutations.
-            plugs.call('player', 'ctrl', 'play_single', args=(playback_url,))
+            plugs.call('player', 'ctrl', 'play_single_passive', args=(playback_url,))
 
             with self.lock:
                 # Update state
@@ -989,33 +1016,46 @@ class PlayerPodcast:
     @plugs.tag
     def pause(self, state: int = 1):
         """
-        Pause or resume playback
+        Pause or resume playback. Re-pins podcast as active (Phase 2
+        FU#2) so ``coordinator.current()`` stays consistent.
 
         Args:
             state: 1 to pause, 0 to resume
         """
         try:
+            self._activate_podcast()
             plugs.call('player', 'ctrl', 'pause', args=(state,))
         except Exception as e:
             logger.error(f"Pause failed: {e}")
 
     @plugs.tag
     def play(self):
-        """Resume playback"""
+        """Resume playback.
+
+        Uses MPD's passive ``pause(0)`` rather than ``play()`` because
+        MPD's ``play`` is an activation event (calls ``_activate_mpd``)
+        which would yank coordinator state away from podcast. Phase 2
+        FU#2 decision: keep podcast pinned for the whole episode."""
         try:
-            plugs.call('player', 'ctrl', 'play')
+            self._activate_podcast()
+            plugs.call('player', 'ctrl', 'pause', args=(0,))
         except Exception as e:
             logger.error(f"Play failed: {e}")
 
     @plugs.tag
     def next(self):
-        """Skip to next episode"""
+        """Skip to next episode. ``_next_episode`` itself uses
+        ``play_single_passive`` via ``_play_episode_from_queue``;
+        re-pinning here is defensive against drift."""
+        self._activate_podcast()
         self._next_episode()
 
     @plugs.tag
     def prev(self):
-        """Skip to previous episode in the podcast feed"""
+        """Skip to previous episode in the podcast feed. Re-pins
+        podcast as active (Phase 2 FU#2)."""
         try:
+            self._activate_podcast()
             with self.lock:
                 current_guid = self.current_episode_guid
             if not current_guid:

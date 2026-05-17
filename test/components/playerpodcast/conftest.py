@@ -80,6 +80,26 @@ sys.modules['jukebox.utils.atomic_io'] = _atomic_mod
 
 
 # ---------------------------------------------------------------------------
+# Stub ``components.player`` parent package (Phase 3b).
+# ---------------------------------------------------------------------------
+# ``components.playerpodcast.__init__`` does
+#     from components.player.coordinator import get_coordinator
+# Importing the real ``components.player.__init__.py`` triggers
+# ``MusicLibPath`` which reads mpd.conf at module-import time - fails
+# under tests. We install a minimal package stub for
+# ``components.player`` with a proper ``__path__`` so the real
+# ``components.player.coordinator`` can be imported normally.
+_PLAYER_PKG_NAME = 'components.player'
+if _PLAYER_PKG_NAME not in sys.modules or not hasattr(
+    sys.modules[_PLAYER_PKG_NAME], '__path__',
+):
+    _player_pkg = types.ModuleType(_PLAYER_PKG_NAME)
+    _player_pkg.__path__ = [str(_JUKEBOX_SRC / 'components' / 'player')]
+    _player_pkg.get_music_library_path = lambda: None
+    sys.modules[_PLAYER_PKG_NAME] = _player_pkg
+
+
+# ---------------------------------------------------------------------------
 # Pattern 2: per-submodule importlib loaders (Phase 3a style)
 # ---------------------------------------------------------------------------
 _PODCAST_DIR = _JUKEBOX_SRC / 'components' / 'playerpodcast'

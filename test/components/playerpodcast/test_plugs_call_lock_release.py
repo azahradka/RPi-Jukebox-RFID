@@ -36,11 +36,10 @@ import pytest
 # transitively (feedparser via feed_manager, requests via downloader).
 sys.modules.setdefault('feedparser', MagicMock())
 sys.modules.setdefault('requests', MagicMock())
-sys.modules.setdefault('components.player', MagicMock())
-sys.modules.setdefault(
-    'components.player.coordinator',
-    MagicMock(get_coordinator=MagicMock()),
-)
+if 'components.player' not in sys.modules:
+    sys.modules['components.player'] = MagicMock()
+# Do NOT shadow ``components.player.coordinator`` - the real module
+# is needed by test/components/player/test_coordinator.py.
 
 from components.playerpodcast import PlayerPodcast  # noqa: E402
 
@@ -125,7 +124,7 @@ def test_play_podcast_series_releases_lock_around_play_single(podcast_player):
     with patch('components.playerpodcast.plugs') as mock_plugs:
         mock_plugs.call = _probing_plugs_call(
             podcast_player,
-            ('player', 'ctrl', 'play_single'),
+            ('player', 'ctrl', 'play_single_passive'),
             probe_results,
         )
         # _activate_podcast goes through coordinator (mocked at module
@@ -160,7 +159,7 @@ def test_play_podcast_episode_releases_lock_around_play_single(podcast_player):
     with patch('components.playerpodcast.plugs') as mock_plugs:
         mock_plugs.call = _probing_plugs_call(
             podcast_player,
-            ('player', 'ctrl', 'play_single'),
+            ('player', 'ctrl', 'play_single_passive'),
             probe_results,
         )
         with patch.object(podcast_player, '_activate_podcast'):
@@ -186,7 +185,7 @@ def test_play_episode_from_queue_releases_lock_around_play_single(podcast_player
     with patch('components.playerpodcast.plugs') as mock_plugs:
         mock_plugs.call = _probing_plugs_call(
             podcast_player,
-            ('player', 'ctrl', 'play_single'),
+            ('player', 'ctrl', 'play_single_passive'),
             probe_results,
         )
         podcast_player._play_episode_from_queue(episode)
@@ -282,7 +281,7 @@ def test_concurrent_status_read_does_not_block_during_play_single(podcast_player
     finished_probe = threading.Event()
 
     def slow_play_single_call(*args, **kwargs):
-        if args == ('player', 'ctrl', 'play_single'):
+        if args == ('player', 'ctrl', 'play_single_passive'):
             in_play_single.set()
             # Wait until the reader thread has had a chance to probe.
             finished_probe.wait(timeout=1.0)

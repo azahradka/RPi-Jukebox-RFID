@@ -34,11 +34,12 @@ import pytest
 # pre-mocks the jukebox framework but not feedparser/requests).
 sys.modules.setdefault('feedparser', MagicMock())
 sys.modules.setdefault('requests', MagicMock())
-sys.modules.setdefault('components.player', MagicMock())
-sys.modules.setdefault(
-    'components.player.coordinator',
-    MagicMock(get_coordinator=MagicMock()),
-)
+# Provide a stub ``components.player`` if not already present (real
+# module needs MPD config). Do NOT shadow ``components.player.coordinator``
+# - tests in test/components/player/test_coordinator.py need the real
+# module, and sys.modules entries persist across tests.
+if 'components.player' not in sys.modules:
+    sys.modules['components.player'] = MagicMock()
 
 from components.playerpodcast import PlayerPodcast  # noqa: E402
 
