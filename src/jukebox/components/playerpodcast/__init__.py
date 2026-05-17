@@ -545,36 +545,30 @@ class PlayerPodcast:
 
     @staticmethod
     def _play_wav_direct(filename):
-        """Play a WAV file directly via ALSA, bypassing the plugs lock.
+        """Play a WAV file directly via ALSA, bypassing jingle.play.
 
-        Kept post-Phase 1/2/3b - here is the rationale:
+        Originally added in Phase 3b as a workaround for the plugs-lock
+        starvation that ``jingle.play`` caused — holding the plugs
+        module lock across the full blocking WAV playback (10-60 s
+        for the waiting jingle), starving the status publisher and
+        every other RPC.
 
-        Phase 1 fixed the ``self.lock``-while-``plugs.call`` deadlocks
-        inside the podcast plugin itself, and Phase 2's lock-release
-        sweep extended that to every podcast call site. Neither phase
-        touched the **plugs module lock** (``jukebox.plugs._lock_module``),
-        which is what makes the jingle plugin a problem here.
+        Phase 6 fixed that root cause: ``jingle.play`` now wraps the
+        blocking call in
+        ``jukebox.plugs.drop_module_lock_for_blocking_call()``.
+        Going through ``jingle.play`` for the waiting sound would now
+        be safe. We keep ``_play_wav_direct`` here anyway because:
 
-        The chain is: the jingle plugin's ``play()`` runs in a worker
-        thread and acquires the plugs module lock for *three* RPCs
-        (get_volume, set_volume(jingle_volume), set_volume(active_volume)
-        after the playback returns). The middle one - the actual
-        ``factory.auto(filename).play(filename)`` call - holds the
-        thread for the full duration of the WAV. During a podcast
-        download (10-60 seconds while the waiting jingle plays), the
-        plugs module lock is therefore unavailable to anyone, which
-        starves the status publisher and stalls the Web UI. RLock
-        semantics don't help: the status thread is a different thread,
-        not a re-entrant caller.
+        - It avoids the three extra RPC hops (get_volume / set_volume
+          jingle / set_volume restore) the proper jingle path makes.
+          The waiting jingle plays during a network download where
+          start latency matters and we don't want to ride the volume
+          plugin's set/restore round-trip.
+        - It does not need the jingle plugin to be loaded — useful in
+          stripped-down configs.
 
-        The fix would have to live in ``components.jingle`` (release
-        the lock before the blocking play, then re-acquire for the
-        volume restore - or hold the volume change *only* across the
-        set/restore, not across the play). That's out of scope for
-        Phase 3b (Phase 6: "Core framework polish"). Until then, the
-        podcast plugin bypasses ``jingle.play`` for the waiting jingle
-        and writes ALSA frames directly. Tests for this method live
-        in ``test_waiting_jingle.py``.
+        Tests for this method live in ``test_waiting_jingle.py``;
+        ``test_jingle_lock_release.py`` covers the Phase 6 fix.
         """
         try:
             import wave
