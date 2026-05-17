@@ -85,11 +85,23 @@ def _stub_zmq_if_missing():
     fake_evloop.__path__ = []  # mark as package
     fake_ioloop = _types.ModuleType('zmq.eventloop.ioloop')
     fake_ioloop.IOLoop = type('IOLoop', (), {})
+    fake_zmqstream = _types.ModuleType('zmq.eventloop.zmqstream')
+    fake_zmqstream.ZMQStream = type('ZMQStream', (), {})
+
+    # Constants referenced beyond the basic socket types — fill in
+    # with sentinel zeros so ``import jukebox.publishing.server``
+    # succeeds at module load time. We never actually call into
+    # zmq in this test file.
+    for attr in ('XPUB', 'XPUB_VERBOSE', 'DRAFT_API'):
+        setattr(fake_zmq, attr, 0)
+    fake_zmq.pyzmq_version = lambda: '0.0.0-stub'
+    fake_zmq.zmq_version = lambda: '0.0.0-stub'
 
     sys.modules['zmq'] = fake_zmq
     sys.modules['zmq.error'] = fake_zmq_error
     sys.modules['zmq.eventloop'] = fake_evloop
     sys.modules['zmq.eventloop.ioloop'] = fake_ioloop
+    sys.modules['zmq.eventloop.zmqstream'] = fake_zmqstream
 
 
 _stub_zmq_if_missing()
