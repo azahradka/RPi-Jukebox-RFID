@@ -36,19 +36,21 @@ const Folders = ({
     const fetchFolderList = async () => {
       setIsLoading(true);
       setError(null);
-      // Phase 4: opt into the legacy ``swallow`` shape so we can render
-      // an inline error in the folder list instead of letting the
+      // Phase 4: catch the RPC failure locally so we can render an
+      // inline error in the folder list instead of letting the
       // top-level error boundary blow the whole app away on a transient
       // backend hiccup.
-      const { result, error: fetchErr } = await request(
-        'folderList',
-        { folder: decodeURIComponent(dir) },
-        { swallow: true },
-      );
-      setIsLoading(false);
-
-      if (result) setFolders(result);
-      if (fetchErr) setError(fetchErr);
+      try {
+        const { result } = await request(
+          'folderList',
+          { folder: decodeURIComponent(dir) },
+        );
+        if (result) setFolders(result);
+      } catch (fetchErr) {
+        setError(fetchErr);
+      } finally {
+        setIsLoading(false);
+      }
     }
 
     fetchFolderList();

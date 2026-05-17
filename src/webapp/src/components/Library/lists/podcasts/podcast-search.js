@@ -40,12 +40,9 @@ const PodcastSearch = ({ isSelecting, onSelectPodcast }) => {
     setSearchPerformed(true);
 
     try {
-      const { result, error: searchError } = await request('searchPodcasts', { query: query.trim() });
-
-      if (searchError) {
-        setError(searchError);
-        setSearchResults([]);
-      } else if (result) {
+      // Phase 5a FU#1: dead ``searchError`` destructure removed.
+      const { result } = await request('searchPodcasts', { query: query.trim() });
+      if (result) {
         setSearchResults(result || []);
       }
     } catch (err) {

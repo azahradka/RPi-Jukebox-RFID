@@ -17,13 +17,16 @@ const SelectecSingle = ({ values: [song_url] }) => {
   useEffect(() => {
     const getSongList = async () => {
       setIsLoading(true);
-      const { result, error } = await request('getSongByUrl', { song_url });
-      setIsLoading(false);
-
-      if(result) {
-        setSong(result[0]);
+      // Phase 5a FU#1: surface fetch errors via local state.
+      try {
+        const { result } = await request('getSongByUrl', { song_url });
+        if(result) {
+          setSong(result[0]);
+        }
+      } catch (err) {
+        setError(err);
       }
-      if(error) setError(error);
+      setIsLoading(false);
     }
 
     getSongList();

@@ -502,6 +502,51 @@ class PlayerSpotify:
         if self._is_active():
             publishing.get_publisher().send('playerstatus', mpd_status)
 
+    def _publish_cleanup_status(self):
+        """Push a final cleared-state snapshot during coordinator handoff.
+
+        Phase 5a (project_phase_3c_followups.md #2). Invoked by the
+        :class:`PlayerCoordinator` AFTER pause + stop and BEFORE the
+        active-backend slot is swapped to the incoming backend. The
+        snapshot is constructed from the current cached
+        ``player_status`` but with every field that would let the UI
+        keep showing this backend's track cleared (state='stop',
+        title/artist/album/file='', elapsed='0', etc.) so the UI is
+        guaranteed a clean baseline if the incoming backend is slow
+        to produce its own first publish (the canonical case is a
+        Spotify 429 storm where the status loop's adaptive backoff
+        could otherwise leave the UI stuck on a stale track).
+
+        Skips publishing entirely if the publisher is unavailable
+        (during shutdown). Bypasses ``_is_active()`` because the
+        coordinator's ordering guarantee (cleanup before slot swap)
+        means we ARE still active at this moment; the gate would
+        approve anyway, but a direct send removes the implicit
+        timing dependency.
+        """
+        cleanup_status = {
+            'state': 'stop',
+            'title': '',
+            'artist': '',
+            'album': '',
+            'file': '',
+            'coverart_url': None,
+            'elapsed': '0',
+            'duration': '0',
+            'random': '0',
+            'repeat': '0',
+            'single': '0',
+            'songid': '',
+            'player_type': 'spotify',
+        }
+        try:
+            publisher = publishing.get_publisher()
+        except Exception:
+            return  # No publisher available (e.g. during early shutdown).
+        if publisher is None:
+            return
+        publisher.send('playerstatus', cleanup_status)
+
     def _handle_status_error_with_backoff(self, exc) -> Tuple[float, BackoffPolicy]:
         """Choose the next-poll interval after an exception.
 
@@ -1345,10 +1390,18 @@ def initialize():
     # Spotify-side cursor in place, preserving resume position; stop
     # is bounded by the coordinator's 5s timeout so a slow Spotify
     # API hiccup cannot stall the handoff.
+    #
+    # publish_cleanup_fn (Phase 5a, project_phase_3c_followups.md #2):
+    # invoked after pause+stop but before the slot is reassigned so
+    # the UI sees a cleared playerstatus snapshot. Critical during
+    # Spotify 429 storms where the status loop's adaptive backoff
+    # would otherwise leave the UI stuck on a stale Spotify track for
+    # tens of seconds after the user swiped an MPD/podcast card.
     get_coordinator().register(
         name='spotify',
         pause_fn=lambda: player_ctrl.pause(1),
         stop_fn=player_ctrl.stop,
+        publish_cleanup_fn=player_ctrl._publish_cleanup_status,
     )
 
     logger.info("Spotify player plugin registered as 'playerspotify.ctrl'")

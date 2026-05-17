@@ -34,21 +34,23 @@ const ActionsControls = ({
       ...(args.length && { args }),
     };
 
-    const { error } = await request('registerCard', kwargs);
-
-    if (error) {
-      return console.error(error);
+    // Phase 5a FU#1: request() throws on failure; try/catch is the
+    // canonical error path.
+    try {
+      await request('registerCard', kwargs);
+    } catch (err) {
+      return console.error(err);
     }
 
     navigate('../');
   };
 
   const handleDeleteCard = async () => {
-    const { error } = await request('deleteCard', { card_id: cardId });
-
-    // TODO: Better Error handling in frontend
-    if (error) {
-      return console.error(error);
+    // Phase 5a FU#1: try/catch in place of the dead ``error`` shape.
+    try {
+      await request('deleteCard', { card_id: cardId });
+    } catch (err) {
+      return console.error(err);
     }
 
     navigate('/cards');

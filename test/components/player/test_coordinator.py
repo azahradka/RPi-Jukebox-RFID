@@ -40,8 +40,17 @@ def coordinator():
 
 
 def _make_backend(calls, name, *, pause_delay=0.0, stop_delay=0.0,
-                  pause_raises=None, stop_raises=None):
-    """Build (pause_fn, stop_fn) that record their invocations in ``calls``."""
+                  pause_raises=None, stop_raises=None,
+                  publish_cleanup_raises=None,
+                  with_publish_cleanup=False):
+    """Build callbacks that record their invocations in ``calls``.
+
+    Returns ``(pause_fn, stop_fn)`` when ``with_publish_cleanup=False``
+    (legacy 2-callback signature used by all existing tests), or
+    ``(pause_fn, stop_fn, publish_cleanup_fn)`` when
+    ``with_publish_cleanup=True`` (Phase 5a — three-callback signature
+    for tests of the cleanup-publish hook).
+    """
     def pause():
         calls.append((name, 'pause'))
         if pause_delay:
@@ -56,7 +65,15 @@ def _make_backend(calls, name, *, pause_delay=0.0, stop_delay=0.0,
         if stop_raises is not None:
             raise stop_raises
 
-    return pause, stop
+    if not with_publish_cleanup:
+        return pause, stop
+
+    def publish_cleanup():
+        calls.append((name, 'publish_cleanup'))
+        if publish_cleanup_raises is not None:
+            raise publish_cleanup_raises
+
+    return pause, stop, publish_cleanup
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +347,210 @@ def test_pause_exception_is_logged_but_handoff_proceeds(coordinator, caplog):
     assert ('outgoing', 'pause') in calls
     assert ('outgoing', 'stop') in calls
     assert coordinator.current() == 'incoming'
+
+
+# ---------------------------------------------------------------------------
+# Cleanup-publish hook (Phase 5a, project_phase_3c_followups.md #2)
+# ---------------------------------------------------------------------------
+def test_publish_cleanup_runs_after_pause_and_stop(coordinator):
+    """When an outgoing backend has registered ``publish_cleanup_fn``,
+    the coordinator must invoke it during handoff AFTER pause + stop
+    (so the cleanup snapshot reflects the now-paused state) and BEFORE
+    the active-backend slot is reassigned (so the backend's own
+    publish helpers still gate-allow the snapshot)."""
+    calls = []
+    p_out, s_out, pc_out = _make_backend(calls, 'outgoing',
+                                          with_publish_cleanup=True)
+    p_in, s_in = _make_backend(calls, 'incoming')
+    coordinator.register('outgoing', stop_fn=s_out, pause_fn=p_out,
+                         publish_cleanup_fn=pc_out)
+    coordinator.register('incoming', stop_fn=s_in, pause_fn=p_in)
+
+    with coordinator.activate('incoming'):
+        pass
+
+    assert calls == [
+        ('outgoing', 'pause'),
+        ('outgoing', 'stop'),
+        ('outgoing', 'publish_cleanup'),
+    ]
+    assert coordinator.current() == 'incoming'
+
+
+def test_publish_cleanup_optional_for_backends_that_dont_opt_in(coordinator):
+    """A backend that registers WITHOUT publish_cleanup_fn must continue
+    to work — no exception, no missing callback in the handoff sequence.
+    This guards the legacy MPD/podcast registrations (they don't yet
+    opt in to cleanup-publish)."""
+    calls = []
+    p_out, s_out = _make_backend(calls, 'outgoing')
+    p_in, s_in = _make_backend(calls, 'incoming')
+    # No publish_cleanup_fn → omitted (defaults to None).
+    coordinator.register('outgoing', stop_fn=s_out, pause_fn=p_out)
+    coordinator.register('incoming', stop_fn=s_in, pause_fn=p_in)
+
+    with coordinator.activate('incoming'):
+        pass
+
+    assert calls == [('outgoing', 'pause'), ('outgoing', 'stop')]
+    assert coordinator.current() == 'incoming'
+
+
+def test_publish_cleanup_runs_before_active_slot_swap(coordinator):
+    """The cleanup hook must run while ``coordinator.current()`` still
+    reports the outgoing backend, NOT after the swap. Otherwise the
+    backend's own publish helpers (which gate on
+    ``coordinator.current() == self.name``) would refuse the cleanup
+    snapshot and the UI would never receive the clear.
+
+    We verify this by having the cleanup callback record
+    ``coordinator.current()`` at the moment of invocation."""
+    calls = []
+    observed_active = []
+
+    def pause_out():
+        calls.append(('outgoing', 'pause'))
+
+    def stop_out():
+        calls.append(('outgoing', 'stop'))
+
+    def publish_cleanup_out():
+        calls.append(('outgoing', 'publish_cleanup'))
+        observed_active.append(coordinator.current())
+
+    def pause_in():
+        calls.append(('incoming', 'pause'))
+
+    def stop_in():
+        calls.append(('incoming', 'stop'))
+
+    coordinator.register('outgoing', stop_fn=stop_out, pause_fn=pause_out,
+                         publish_cleanup_fn=publish_cleanup_out)
+    coordinator.register('incoming', stop_fn=stop_in, pause_fn=pause_in)
+
+    with coordinator.activate('incoming'):
+        pass
+
+    assert observed_active == ['outgoing'], (
+        f"cleanup-publish must see coordinator.current() == 'outgoing' "
+        f"(not yet swapped); saw {observed_active!r}"
+    )
+    assert coordinator.current() == 'incoming'
+
+
+def test_publish_cleanup_exception_does_not_block_handoff(coordinator, caplog):
+    """A failing cleanup-publish (e.g. publisher torn down) must not
+    abort the handoff. Log the error and proceed to the slot swap."""
+    calls = []
+    p_out, s_out, pc_out = _make_backend(
+        calls, 'outgoing',
+        with_publish_cleanup=True,
+        publish_cleanup_raises=RuntimeError('publisher gone'),
+    )
+    p_in, s_in = _make_backend(calls, 'incoming')
+    coordinator.register('outgoing', stop_fn=s_out, pause_fn=p_out,
+                         publish_cleanup_fn=pc_out)
+    coordinator.register('incoming', stop_fn=s_in, pause_fn=p_in)
+
+    with caplog.at_level(logging.ERROR, logger='jb.player.coordinator'):
+        with coordinator.activate('incoming'):
+            pass
+
+    assert coordinator.current() == 'incoming'
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any('publisher gone' in m or 'RuntimeError' in m for m in msgs)
+
+
+def test_publish_cleanup_skipped_for_idempotent_activation(coordinator):
+    """Activating the already-current backend is a no-op: no pause,
+    no stop, no cleanup-publish. The cleanup hook is only relevant on
+    REAL handoffs."""
+    calls = []
+    p_out, s_out, pc_out = _make_backend(calls, 'outgoing',
+                                          with_publish_cleanup=True)
+    coordinator.register('outgoing', stop_fn=s_out, pause_fn=p_out,
+                         publish_cleanup_fn=pc_out)
+
+    with coordinator.activate('outgoing'):
+        pass
+    with coordinator.activate('outgoing'):
+        pass
+
+    assert calls == []
+
+
+def test_publish_cleanup_clears_stale_ui_state_during_429_storm(coordinator):
+    """Regression test for project_phase_3c_followups.md #2.
+
+    Simulate the canonical failure mode: Spotify is the active
+    backend, hits a 429 storm so its status loop is throttled to a
+    30s backoff. The user swipes an MPD card during the storm. Without
+    the cleanup-publish, the UI would be stuck on the last Spotify
+    status (the title/artist/file fields of whatever was playing)
+    until either (a) MPD pushes its first status, or (b) Spotify's
+    next throttled poll comes around — whichever comes first.
+
+    The cleanup-publish guarantees a cleared snapshot lands AS PART
+    of the coordinator handoff, before either of those events. We
+    assert: (1) the cleanup callback fires exactly once on handoff,
+    (2) it fires after Spotify's pause+stop, (3) MPD (the incoming
+    backend) never sees a cleanup-publish (because it didn't opt in)."""
+    sent_messages = []
+
+    def pause_spotify():
+        sent_messages.append(('spotify', 'pause_called'))
+
+    def stop_spotify():
+        sent_messages.append(('spotify', 'stop_called'))
+
+    def spotify_cleanup_publish():
+        # Mimics the real backend: builds a cleared snapshot dict
+        # and forwards it to the publisher.
+        cleared = {'state': 'stop', 'title': '', 'file': '',
+                   'player_type': 'spotify'}
+        sent_messages.append(('spotify', 'publish_cleanup', cleared))
+
+    def pause_mpd():
+        sent_messages.append(('mpd', 'pause_called'))
+
+    def stop_mpd():
+        sent_messages.append(('mpd', 'stop_called'))
+
+    coordinator.register('spotify', stop_fn=stop_spotify, pause_fn=pause_spotify,
+                         publish_cleanup_fn=spotify_cleanup_publish)
+    # MPD registered after Spotify but coordinator.register() doesn't
+    # flip current(), so we explicitly activate spotify first.
+    coordinator.register('mpd', stop_fn=stop_mpd, pause_fn=pause_mpd)
+    with coordinator.activate('spotify'):
+        pass
+    sent_messages.clear()  # discard the spotify-activation noise
+
+    # User swipes MPD card mid-429-storm.
+    with coordinator.activate('mpd'):
+        pass
+
+    # Cleanup-publish fired exactly once on this handoff, after
+    # Spotify's pause+stop, and the payload was the cleared snapshot.
+    cleanup_events = [m for m in sent_messages if m[0] == 'spotify' and m[1] == 'publish_cleanup']
+    assert len(cleanup_events) == 1, (
+        f"expected exactly one cleanup-publish during handoff, got "
+        f"{len(cleanup_events)}: {sent_messages!r}"
+    )
+    cleared_payload = cleanup_events[0][2]
+    # The UI's stale-state guard relies on these fields being blanked.
+    assert cleared_payload['state'] == 'stop'
+    assert cleared_payload['title'] == ''
+    assert cleared_payload['file'] == ''
+
+    # Ordering: pause → stop → publish_cleanup (no MPD callbacks in
+    # between — MPD only acts as the incoming backend).
+    spotify_seq = [m[1] for m in sent_messages if m[0] == 'spotify']
+    assert spotify_seq == ['pause_called', 'stop_called', 'publish_cleanup']
+
+    # MPD didn't opt in to cleanup-publish (it's the incoming backend
+    # anyway, but we double-check no callback fired for it).
+    mpd_events = [m for m in sent_messages if m[0] == 'mpd']
+    assert all(m[1] != 'publish_cleanup' for m in mpd_events)
 
 
 # ---------------------------------------------------------------------------

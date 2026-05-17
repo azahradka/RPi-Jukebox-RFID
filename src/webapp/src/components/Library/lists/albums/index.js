@@ -30,11 +30,16 @@ const Albums = ({ musicFilter }) => {
   useEffect(() => {
     const fetchAlbumList = async () => {
       setIsLoading(true);
-      const { result, error } = await request('albumList');
+      // Phase 5a FU#1: dead ``error`` destructure removed; use
+      // try/catch + local state so the album list page renders an
+      // inline error instead of unmounting via the top-level boundary.
+      try {
+        const { result } = await request('albumList');
+        if(result) setAlbums(result.reduce(flatByAlbum, []));
+      } catch (err) {
+        setError(err);
+      }
       setIsLoading(false);
-
-      if(result) setAlbums(result.reduce(flatByAlbum, []));
-      if(error) setError(error);
     }
 
     fetchAlbumList();

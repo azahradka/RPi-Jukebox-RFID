@@ -26,16 +26,27 @@
     "uuid": "^9.0.1"
   },
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
+    "start": "node scripts/generate-commands.js && react-scripts start",
+    "build": "node scripts/generate-commands.js && react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "generate-commands": "node scripts/generate-commands.js",
+    "check-commands": "node scripts/generate-commands.js --check"
   },
   "eslintConfig": {
     "extends": [
       "react-app",
       "react-app/jest"
-    ]
+    ],
+    "rules": {
+      "no-restricted-syntax": [
+        "error",
+        {
+          "selector": "VariableDeclarator[init.type='AwaitExpression'][init.argument.callee.name='request'] > ObjectPattern:has(Property[key.name='error'])",
+          "message": "Phase 5a FU#1: ``request()`` throws on failure (Phase 1 made the contract explicit); the legacy ``const { result, error } = await request(...)`` shape is dead. Use ``const { result } = await request(...)`` + try/catch, or opt into the legacy shape explicitly with ``await request(name, kwargs, { swallow: true })``."
+        }
+      ]
+    }
   },
   "browserslist": {
     "production": [

@@ -82,12 +82,25 @@ STOP_TIMEOUT_SECONDS = 5.0
 class _Backend(NamedTuple):
     """A registered player backend.
 
-    Holds the callables used during handoff. Both must be callable with
+    Holds the callables used during handoff. All must be callable with
     no arguments and may raise — the coordinator catches and logs.
+
+    Phase 5a (project_phase_3c_followups.md #2): ``publish_cleanup_fn``
+    is an OPTIONAL final-publish hook invoked AFTER pause + stop, just
+    before the outgoing backend is deactivated. Its purpose is to push
+    a single ``playerstatus`` snapshot with cleared/cleanup fields
+    (e.g. ``playing: false``, ``current_uri: null``) so the Web UI is
+    not stuck looking at the old backend's last status during the gap
+    before the incoming backend's first publish. This matters during
+    error storms (e.g. Spotify 429 floods) where the outgoing backend's
+    normal status loop is throttled. None means "skip cleanup
+    publish" — preserves the pre-5a behaviour for backends that
+    haven't opted in.
     """
     name: str
     stop_fn: Callable[[], None]
     pause_fn: Callable[[], None]
+    publish_cleanup_fn: Optional[Callable[[], None]] = None
 
 
 class PlayerCoordinator:
@@ -116,8 +129,28 @@ class PlayerCoordinator:
         name: str,
         stop_fn: Callable[[], None],
         pause_fn: Callable[[], None],
+        publish_cleanup_fn: Optional[Callable[[], None]] = None,
     ) -> None:
         """Register a backend with its handoff callbacks.
+
+        Parameters
+        ----------
+        name
+            Backend identifier (``mpd``, ``spotify``, ``podcast``).
+        stop_fn
+            Invoked AFTER ``pause_fn`` during handoff; bounded by
+            :data:`STOP_TIMEOUT_SECONDS`.
+        pause_fn
+            Invoked first during handoff so the outgoing backend can
+            persist its resume position before being stopped.
+        publish_cleanup_fn
+            Optional Phase 5a hook (project_phase_3c_followups.md #2).
+            Invoked AFTER pause + stop and BEFORE swapping the active
+            backend slot. The callback should push a single
+            ``playerstatus`` publish message with cleared fields so
+            the Web UI can clear stale state during the gap before
+            the incoming backend's first publish. None means the
+            backend opts out of cleanup-publish (legacy behaviour).
 
         The first backend to register becomes the initial active player
         (mirroring the prior ``_active_player = 'mpd'`` module-global
@@ -126,7 +159,12 @@ class PlayerCoordinator:
         untouched.
         """
         with self._lock:
-            self._backends[name] = _Backend(name=name, stop_fn=stop_fn, pause_fn=pause_fn)
+            self._backends[name] = _Backend(
+                name=name,
+                stop_fn=stop_fn,
+                pause_fn=pause_fn,
+                publish_cleanup_fn=publish_cleanup_fn,
+            )
             if self._current is None:
                 self._current = name
                 logger.info(f"Coordinator: initial active backend = {name}")
@@ -200,11 +238,21 @@ class PlayerCoordinator:
             outgoing = self._backends.get(outgoing_name) if outgoing_name else None
 
         # Pause first so the outgoing backend can persist its resume
-        # position before being stopped. Both calls run with the
-        # coordinator lock released.
+        # position before being stopped. Then run the optional cleanup
+        # publish so the UI clears stale state in the gap before the
+        # incoming backend produces its first publish. All calls run
+        # with the coordinator lock released.
+        #
+        # Ordering note: the cleanup publish runs BEFORE
+        # ``self._current = name`` because the outgoing backend's
+        # ``_is_active()`` (which gates its publish helper) reads
+        # ``coordinator.current()``. Swapping first would cause the
+        # gate to flip closed and the cleanup snapshot would be
+        # dropped silently. See project_phase_3c_followups.md #2.
         if outgoing is not None:
             self._call_pause(outgoing)
             self._call_stop_with_timeout(outgoing)
+            self._call_publish_cleanup(outgoing)
 
         with self._lock:
             self._current = name
@@ -217,6 +265,27 @@ class PlayerCoordinator:
         except Exception as e:
             logger.error(
                 f"Coordinator: pause_fn for {backend.name!r} raised "
+                f"{e.__class__.__name__}: {e}"
+            )
+
+    @staticmethod
+    def _call_publish_cleanup(backend: _Backend) -> None:
+        """Invoke the outgoing backend's optional cleanup-publish hook.
+
+        Phase 5a (project_phase_3c_followups.md #2). Callable is
+        optional — backends that haven't opted in pass ``None`` to
+        :meth:`PlayerCoordinator.register`. Exceptions are logged
+        and swallowed: a failed cleanup publish must not block the
+        handoff. The hook runs synchronously (no timeout) because it
+        is expected to be cheap (one ZMQ publish; no network I/O).
+        """
+        if backend.publish_cleanup_fn is None:
+            return
+        try:
+            backend.publish_cleanup_fn()
+        except Exception as e:
+            logger.error(
+                f"Coordinator: publish_cleanup_fn for {backend.name!r} raised "
                 f"{e.__class__.__name__}: {e}"
             )
 

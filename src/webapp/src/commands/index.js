@@ -1,3 +1,9 @@
+// THIS FILE IS AUTO-GENERATED — DO NOT EDIT BY HAND.
+// Source of truth: src/jukebox/components/rpc_command_alias.py
+//                  (web_command_definitions dictionary).
+// Regenerate with: npm run generate-commands
+// See Phase 5a, src/webapp/scripts/generate-commands.js for details.
+
 const commands = {
   getSingleCoverArt: {
     _package: 'player',
@@ -28,32 +34,18 @@ const commands = {
     _package: 'player',
     plugin: 'ctrl',
     method: 'get_song_by_url',
-    argKeys: ['song_url']
+    argKeys: ['song_url'],
   },
   folderList: {
     _package: 'player',
     plugin: 'ctrl',
     method: 'get_folder_content',
   },
-  cardsList: {
-    _package: 'cards',
-    plugin: 'list_cards',
-  },
-  registerCard: {
-    _package: 'cards',
-    plugin: 'register_card',
-  },
-  deleteCard: {
-    _package: 'cards',
-    plugin: 'delete_card',
-  },
   playerstatus: {
     _package: 'player',
     plugin: 'ctrl',
-    method: 'playerstatus'
+    method: 'playerstatus',
   },
-
-  // Player Actions
   play: {
     _package: 'player',
     plugin: 'ctrl',
@@ -63,19 +55,19 @@ const commands = {
     _package: 'player',
     plugin: 'ctrl',
     method: 'play_single',
-    argKeys: ['song_url']
+    argKeys: ['song_url'],
   },
   play_folder: {
     _package: 'player',
     plugin: 'ctrl',
     method: 'play_folder',
-    argKeys: ['folder']
+    argKeys: ['folder'],
   },
   play_album: {
     _package: 'player',
     plugin: 'ctrl',
     method: 'play_album',
-    argKeys: ['albumartist', 'album']
+    argKeys: ['albumartist', 'album'],
   },
   pause: {
     _package: 'player',
@@ -114,8 +106,18 @@ const commands = {
     plugin: 'ctrl',
     method: 'seek',
   },
-
-  // Volume
+  cardsList: {
+    _package: 'cards',
+    plugin: 'list_cards',
+  },
+  registerCard: {
+    _package: 'cards',
+    plugin: 'register_card',
+  },
+  deleteCard: {
+    _package: 'cards',
+    plugin: 'delete_card',
+  },
   setVolume: {
     _package: 'volume',
     plugin: 'ctrl',
@@ -164,8 +166,12 @@ const commands = {
     plugin: 'ctrl',
     method: 'toggle_output',
   },
-
-  // Timers
+  timer_fade_volume: {
+    _package: 'timers',
+    plugin: 'timer_fade_volume',
+    method: 'start',
+    argKeys: ['wait_seconds'],
+  },
   'timer_fade_volume.cancel': {
     _package: 'timers',
     plugin: 'timer_fade_volume',
@@ -176,9 +182,9 @@ const commands = {
     plugin: 'timer_fade_volume',
     method: 'get_state',
   },
-  'timer_fade_volume': {
+  timer_shutdown: {
     _package: 'timers',
-    plugin: 'timer_fade_volume',
+    plugin: 'timer_shutdown',
     method: 'start',
     argKeys: ['wait_seconds'],
   },
@@ -192,9 +198,9 @@ const commands = {
     plugin: 'timer_shutdown',
     method: 'get_state',
   },
-  'timer_shutdown': {
+  timer_stop_player: {
     _package: 'timers',
-    plugin: 'timer_shutdown',
+    plugin: 'timer_stop_player',
     method: 'start',
     argKeys: ['wait_seconds'],
   },
@@ -208,14 +214,12 @@ const commands = {
     plugin: 'timer_stop_player',
     method: 'get_state',
   },
-  'timer_stop_player': {
+  timer_idle_shutdown: {
     _package: 'timers',
-    plugin: 'timer_stop_player',
+    plugin: 'timer_idle_shutdown',
     method: 'start',
     argKeys: ['wait_seconds'],
   },
-
-
   'timer_idle_shutdown.cancel': {
     _package: 'timers',
     plugin: 'timer_idle_shutdown',
@@ -226,16 +230,6 @@ const commands = {
     plugin: 'timer_idle_shutdown',
     method: 'get_state',
   },
-  'timer_idle_shutdown': {
-    _package: 'timers',
-    plugin: 'timer_idle_shutdown',
-    method: 'start',
-    argKeys: ['wait_seconds'],
-  },
-
-
-
-  // Host
   getAutohotspotStatus: {
     _package: 'host',
     plugin: 'get_autohotspot_status',
@@ -269,97 +263,88 @@ const commands = {
     plugin: 'say_my_ip',
     argKeys: ['option'],
   },
-
-  // Misc
   getAppSettings: {
     _package: 'misc',
-    plugin: 'get_app_settings'
+    plugin: 'get_app_settings',
   },
-
   setAppSettings: {
     _package: 'misc',
     plugin: 'set_app_settings',
     argKeys: ['settings'],
   },
-
-  // Synchronisation
-  'sync_rfidcards_all': {
+  sync_rfidcards_all: {
     _package: 'sync_rfidcards',
     plugin: 'ctrl',
-    method: 'sync_all'
+    method: 'sync_all',
   },
-  'sync_rfidcards_change_on_rfid_scan': {
+  sync_rfidcards_change_on_rfid_scan: {
     _package: 'sync_rfidcards',
     plugin: 'ctrl',
     method: 'sync_change_on_rfid_scan',
-    argKeys: ['option']
+    argKeys: ['option'],
   },
-
-  // Podcasts
   searchPodcasts: {
     _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'search_podcasts',
-    argKeys: ['query']
+    argKeys: ['query'],
   },
   getPodcastEpisodes: {
     _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'get_episodes',
-    argKeys: ['feed_url', 'force_refresh']
+    argKeys: ['feed_url', 'force_refresh'],
   },
   getPodcastInfo: {
     _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'get_podcast_info',
-    argKeys: ['feed_url']
+    argKeys: ['feed_url'],
   },
   refreshPodcastFeed: {
     _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'refresh_feed',
-    argKeys: ['feed_url']
+    argKeys: ['feed_url'],
   },
   podcastPlayerStatus: {
     _package: 'player_podcast',
     plugin: 'ctrl',
-    method: 'playerstatus'
+    method: 'playerstatus',
   },
   getPodcastStats: {
     _package: 'player_podcast',
     plugin: 'ctrl',
-    method: 'get_stats'
+    method: 'get_stats',
   },
   play_podcast_series: {
     _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'play_podcast_series',
-    argKeys: ['feed_url']
+    argKeys: ['feed_url'],
   },
   play_podcast_episode: {
     _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'play_podcast_episode',
-    argKeys: ['feed_url', 'episode_guid']
+    argKeys: ['feed_url', 'episode_guid'],
   },
   getPodcastCacheStats: {
     _package: 'player_podcast',
     plugin: 'ctrl',
-    method: 'get_cache_stats'
+    method: 'get_cache_stats',
   },
   clearPodcastCache: {
     _package: 'player_podcast',
     plugin: 'ctrl',
-    method: 'clear_episode_cache'
+    method: 'clear_episode_cache',
   },
   evictPodcastEpisode: {
     _package: 'player_podcast',
     plugin: 'ctrl',
     method: 'evict_episode',
-    argKeys: ['episode_guid']
+    argKeys: ['episode_guid'],
   },
-
-  // Spotify
   spotifyGetConfig: {
     _package: 'player_spotify',
     plugin: 'ctrl',

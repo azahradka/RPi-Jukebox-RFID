@@ -40,9 +40,11 @@ const SelectPlayPodcast = ({
     if (feedUrl && !podcastMetadata && !fetchedMetadata && !isLoading) {
       setIsLoading(true);
 
-      // Fetch podcast metadata from the RSS feed
+      // Fetch podcast metadata from the RSS feed.
+      // Phase 5a FU#1: request() throws on failure; the dead ``error``
+      // destructure has been removed. .catch handles failures.
       request('getPodcastInfo', { feed_url: feedUrl })
-        .then(({ result, error }) => {
+        .then(({ result }) => {
           if (result && result.title) {
             setFetchedMetadata(result);
           }

@@ -74,7 +74,8 @@ jobs:
         # (measured ~52% on Python 3.11 after PodcastPlaybackState
         # seam, real-exercise lock-release tests, coordinator-pinning
         # tests, and the coordinator double-invoke regression test;
-        # ~2% headroom).
+        # ~2% headroom). Phase 5a added the cleanup-publish coordinator
+        # hook + tests and the rpc_command_alias shape tests (~2% headroom).
         # Phase 6 ratchets to 53% (measured ~56% on Python 3.11 after
         # adding paths / plug_schema / readerbase heartbeat / jingle
         # lock-release / cfghandler getn / BackoffPolicy tests;

@@ -34,23 +34,21 @@ const Outputs = () => {
 
   useEffect(() => {
     const fetchAudioOutputs = async () =>  {
-      const {
-        result: { active_sink, sink_list },
-        error
-      } = await request('getAudioOutputs');
-      setIsLoading(false);
+      try {
+        const { result: { active_sink, sink_list } } = await request('getAudioOutputs');
+        setIsLoading(false);
 
-      if (error) {
+        const activeSinkIndex = findIndex(
+          propEq('pulse_sink_name', active_sink)
+        )(sink_list);
+
+        setActiveSink(activeSinkIndex);
+        setSinkList(sink_list);
+      } catch (error) {
+        setIsLoading(false);
         setIsError(true);
-        return console.error(error);
+        console.error(error);
       }
-
-      const activeSinkIndex = findIndex(
-        propEq('pulse_sink_name', active_sink)
-      )(sink_list);
-
-      setActiveSink(activeSinkIndex);
-      setSinkList(sink_list);
     }
 
     fetchAudioOutputs();

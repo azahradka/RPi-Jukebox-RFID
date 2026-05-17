@@ -1,11 +1,40 @@
-"""
-This file provides definitions for RPC command aliases
+"""Single source of truth for RPC commands (Phase 5a).
+
+This file defines two dictionaries that together form the Phoniebox RPC
+contract surface:
+
+* :data:`cmd_alias_definitions` — short aliases used in ``cards.yaml`` and
+  GPIO triggers. Maps human-friendly names like ``play_card`` to the
+  underlying ``(package, plugin, method)`` triple plus card-specific
+  metadata (``ignore_card_removal_action``, ``ignore_same_id_delay``,
+  ``title``, ``note``).
+
+* :data:`web_command_definitions` — the comprehensive Web UI RPC catalog
+  consumed by ``src/webapp/src/commands/index.js``. This dict is the
+  *source of truth* for the JS commands file; the JS file is generated
+  from it by ``src/webapp/scripts/generate-commands.js`` at build time.
+  Each entry maps a JS command name (e.g. ``spotifySearch``) to its
+  RPC binding and optional ``argKeys`` order.
+
+Until Phase 5a, the JS file was hand-maintained in parallel with this
+file — two parallel sources of truth that could (and did) drift. The
+new contract:
+
+1. Edit ONLY this Python file when adding or changing an RPC command.
+2. Run ``npm run generate-commands`` (or ``npm run build``) to refresh
+   the JS file.
+3. The generator validates at build time that every command resolves to
+   a registered Python plugin method; mismatches fail the build.
+
+See also: :data:`KNOWN_PLUGIN_METHOD_ALLOWLIST` for entries the validator
+cannot discover statically (e.g. flat modules that ``@plugs.register``
+top-level functions).
 
 See [RPC Commands](../../builders/rpc-commands.md)
 """
 
 # --------------------------------------------------------------
-# Pre-defined aliases
+# Pre-defined aliases (card actions / GPIO triggers)
 # These aliases can be used by all modules
 # Module-specific behaviour modifiers can be simply appended
 # Use the functions utils.decode_rpc_command to decode the entries!
@@ -257,6 +286,320 @@ cmd_alias_definitions = {
         'title': "Change activation of 'on RFID scan'",
         'ignore_card_removal_action': True},
 }
+
+# --------------------------------------------------------------
+# Web UI command catalog (Phase 5a — single source of truth)
+# --------------------------------------------------------------
+# Consumed by ``src/webapp/scripts/generate-commands.js`` to emit
+# ``src/webapp/src/commands/index.js``.
+#
+# Schema per entry:
+#   {
+#       'package': str,         # required — RPC package alias from
+#                               #   jukebox.yaml modules.named (left side)
+#       'plugin':  str,         # required — registered plugin name
+#                               #   (often 'ctrl' for player backends, or a
+#                               #   top-level function name for flat modules)
+#       'method':  str | None,  # optional — method on the plugin; omit or
+#                               #   None for 2-part calls (package.plugin)
+#       'argKeys': list[str],   # optional — ordered kwarg names the JS
+#                               #   caller passes as positional args
+#       'note':    str,         # optional — developer-facing description
+#       'internal': bool,       # optional — when True, NOT emitted to the
+#                               #   JS file. Use for backend-only RPCs
+#                               #   (e.g. play_single_passive — see
+#                               #   project_phase_3b_followups.md #2).
+#   }
+#
+# Naming convention: keep JS keys camelCase for UI-only commands
+# (getSongByUrl, spotifySearch) and snake_case for commands also exposed
+# as card-action aliases (play_card, play_single, change_volume). Keys
+# starting with ``timer_`` use dotted suffixes (.cancel, .get_state) per
+# the existing convention.
+
+web_command_definitions = {
+    # ------------------------------------------------------------------
+    # Player (MPD)
+    # ------------------------------------------------------------------
+    'getSingleCoverArt': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'get_single_coverart'},
+    'getAlbumCoverArt': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'get_album_coverart'},
+    'directoryTreeOfAudiofolder': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'list_all_dirs'},
+    'albumList': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'list_albums'},
+    'songList': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'list_songs_by_artist_and_album'},
+    'getSongByUrl': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'get_song_by_url',
+        'argKeys': ['song_url']},
+    'folderList': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'get_folder_content'},
+    'playerstatus': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'playerstatus'},
+
+    # Player actions (also exposed as card aliases — same triples)
+    'play': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'play'},
+    'play_single': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'play_single',
+        'argKeys': ['song_url']},
+    'play_folder': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'play_folder',
+        'argKeys': ['folder']},
+    'play_album': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'play_album',
+        'argKeys': ['albumartist', 'album']},
+    'pause': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'pause'},
+    'prev_song': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'prev'},
+    'next_song': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'next'},
+    'toggle': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'toggle'},
+    'shuffle': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'shuffle',
+        'argKeys': ['option']},
+    'repeat': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'repeat',
+        'argKeys': ['option']},
+    'seek': {
+        'package': 'player', 'plugin': 'ctrl', 'method': 'seek'},
+
+    # NOTE: ``play_single_passive`` is intentionally not exposed here.
+    # See project_phase_3b_followups.md #2 — it's a backend-only RPC
+    # used by playerpodcast to drive the MPD wire WITHOUT claiming the
+    # coordinator's active-backend slot. External callers (Web UI, card
+    # YAML, GPIO) must use ``play_single`` instead, which calls
+    # ``coordinator.activate('mpd')``. Marking it ``'internal': True``
+    # documents the omission and is enforced by the generator (the
+    # validator checks it against KNOWN_INTERNAL_PLUGIN_METHODS below).
+
+    # ------------------------------------------------------------------
+    # Cards
+    # ------------------------------------------------------------------
+    'cardsList': {
+        'package': 'cards', 'plugin': 'list_cards'},
+    'registerCard': {
+        'package': 'cards', 'plugin': 'register_card'},
+    'deleteCard': {
+        'package': 'cards', 'plugin': 'delete_card'},
+
+    # ------------------------------------------------------------------
+    # Volume
+    # ------------------------------------------------------------------
+    'setVolume': {
+        'package': 'volume', 'plugin': 'ctrl', 'method': 'set_volume',
+        'argKeys': ['volume']},
+    'getVolume': {
+        'package': 'volume', 'plugin': 'ctrl', 'method': 'get_volume'},
+    'getMaxVolume': {
+        'package': 'volume', 'plugin': 'ctrl', 'method': 'get_soft_max_volume'},
+    'setMaxVolume': {
+        'package': 'volume', 'plugin': 'ctrl', 'method': 'set_soft_max_volume'},
+    'change_volume': {
+        'package': 'volume', 'plugin': 'ctrl', 'method': 'change_volume',
+        'argKeys': ['step']},
+    'toggleMuteVolume': {
+        'package': 'volume', 'plugin': 'ctrl', 'method': 'mute'},
+    'getAudioOutputs': {
+        'package': 'volume', 'plugin': 'ctrl', 'method': 'get_outputs'},
+    'setAudioOutput': {
+        'package': 'volume', 'plugin': 'ctrl', 'method': 'set_output',
+        'argKeys': ['sink_index']},
+    'toggle_output': {
+        'package': 'volume', 'plugin': 'ctrl', 'method': 'toggle_output'},
+
+    # ------------------------------------------------------------------
+    # Timers — each timer plugin exposes start (default), cancel, get_state
+    # ------------------------------------------------------------------
+    'timer_fade_volume': {
+        'package': 'timers', 'plugin': 'timer_fade_volume', 'method': 'start',
+        'argKeys': ['wait_seconds']},
+    'timer_fade_volume.cancel': {
+        'package': 'timers', 'plugin': 'timer_fade_volume', 'method': 'cancel'},
+    'timer_fade_volume.get_state': {
+        'package': 'timers', 'plugin': 'timer_fade_volume', 'method': 'get_state'},
+    'timer_shutdown': {
+        'package': 'timers', 'plugin': 'timer_shutdown', 'method': 'start',
+        'argKeys': ['wait_seconds']},
+    'timer_shutdown.cancel': {
+        'package': 'timers', 'plugin': 'timer_shutdown', 'method': 'cancel'},
+    'timer_shutdown.get_state': {
+        'package': 'timers', 'plugin': 'timer_shutdown', 'method': 'get_state'},
+    'timer_stop_player': {
+        'package': 'timers', 'plugin': 'timer_stop_player', 'method': 'start',
+        'argKeys': ['wait_seconds']},
+    'timer_stop_player.cancel': {
+        'package': 'timers', 'plugin': 'timer_stop_player', 'method': 'cancel'},
+    'timer_stop_player.get_state': {
+        'package': 'timers', 'plugin': 'timer_stop_player', 'method': 'get_state'},
+    'timer_idle_shutdown': {
+        'package': 'timers', 'plugin': 'timer_idle_shutdown', 'method': 'start',
+        'argKeys': ['wait_seconds']},
+    'timer_idle_shutdown.cancel': {
+        'package': 'timers', 'plugin': 'timer_idle_shutdown', 'method': 'cancel'},
+    'timer_idle_shutdown.get_state': {
+        'package': 'timers', 'plugin': 'timer_idle_shutdown', 'method': 'get_state'},
+
+    # ------------------------------------------------------------------
+    # Host
+    # ------------------------------------------------------------------
+    'getAutohotspotStatus': {
+        'package': 'host', 'plugin': 'get_autohotspot_status'},
+    'startAutohotspot': {
+        'package': 'host', 'plugin': 'start_autohotspot'},
+    'stopAutohotspot': {
+        'package': 'host', 'plugin': 'stop_autohotspot'},
+    'getIpAddress': {
+        'package': 'host', 'plugin': 'get_ip_address'},
+    'getDiskUsage': {
+        'package': 'host', 'plugin': 'get_disk_usage'},
+    'reboot': {
+        'package': 'host', 'plugin': 'reboot'},
+    'shutdown': {
+        'package': 'host', 'plugin': 'shutdown'},
+    'say_my_ip': {
+        'package': 'host', 'plugin': 'say_my_ip',
+        'argKeys': ['option']},
+
+    # ------------------------------------------------------------------
+    # Misc (flat module: src/jukebox/components/misc.py)
+    # ------------------------------------------------------------------
+    'getAppSettings': {
+        'package': 'misc', 'plugin': 'get_app_settings'},
+    'setAppSettings': {
+        'package': 'misc', 'plugin': 'set_app_settings',
+        'argKeys': ['settings']},
+
+    # ------------------------------------------------------------------
+    # Synchronisation
+    # ------------------------------------------------------------------
+    'sync_rfidcards_all': {
+        'package': 'sync_rfidcards', 'plugin': 'ctrl', 'method': 'sync_all'},
+    'sync_rfidcards_change_on_rfid_scan': {
+        'package': 'sync_rfidcards', 'plugin': 'ctrl',
+        'method': 'sync_change_on_rfid_scan',
+        'argKeys': ['option']},
+
+    # ------------------------------------------------------------------
+    # Podcasts
+    # ------------------------------------------------------------------
+    'searchPodcasts': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'search_podcasts',
+        'argKeys': ['query']},
+    'getPodcastEpisodes': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'get_episodes',
+        'argKeys': ['feed_url', 'force_refresh']},
+    'getPodcastInfo': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'get_podcast_info',
+        'argKeys': ['feed_url']},
+    'refreshPodcastFeed': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'refresh_feed',
+        'argKeys': ['feed_url']},
+    'podcastPlayerStatus': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'playerstatus'},
+    'getPodcastStats': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'get_stats'},
+    'play_podcast_series': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'play_podcast_series',
+        'argKeys': ['feed_url']},
+    'play_podcast_episode': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'play_podcast_episode',
+        'argKeys': ['feed_url', 'episode_guid']},
+    'getPodcastCacheStats': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'get_cache_stats'},
+    'clearPodcastCache': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'clear_episode_cache'},
+    'evictPodcastEpisode': {
+        'package': 'player_podcast', 'plugin': 'ctrl', 'method': 'evict_episode',
+        'argKeys': ['episode_guid']},
+
+    # ------------------------------------------------------------------
+    # Spotify
+    # ------------------------------------------------------------------
+    'spotifyGetConfig': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'get_spotify_config'},
+    'spotifySetConfig': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'set_spotify_config',
+        'argKeys': ['client_id', 'client_secret']},
+    'spotifyGetAuthStatus': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'get_auth_status'},
+    'spotifyGetAuthUrl': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'get_auth_url'},
+    'spotifyAuthenticate': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'authenticate',
+        'argKeys': ['auth_code']},
+    'spotifyLogout': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'logout'},
+    'spotifySearch': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'search',
+        'argKeys': ['query', 'content_type', 'limit']},
+    'spotifyGetUserPlaylists': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'get_user_playlists',
+        'argKeys': ['limit', 'offset']},
+    'spotifyGetUserAlbums': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'get_user_albums',
+        'argKeys': ['limit', 'offset']},
+    'spotifyGetContentDetails': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'get_content_details',
+        'argKeys': ['uri']},
+    'spotifyPlayContent': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'play_content',
+        'argKeys': ['uri']},
+    'play_spotify_card': {
+        'package': 'player_spotify', 'plugin': 'ctrl', 'method': 'play_card',
+        'argKeys': ['uri']},
+}
+
+
+# --------------------------------------------------------------
+# Validator allowlists (Phase 5a)
+# --------------------------------------------------------------
+# The generator's validator builds a registry of registered plugin
+# callables by AST-scanning ``src/jukebox/components/``. Some entries
+# cannot be discovered statically:
+#
+# * flat modules that ``@plugs.register`` top-level functions and whose
+#   package name does not match the directory (e.g. ``misc.py``);
+# * timer plugins that register subclass instances dynamically.
+#
+# Entries here are accepted by the validator without further proof.
+# Adding to this list should be rare and reviewed — every entry
+# bypasses the contract drift guarantee.
+KNOWN_PLUGIN_METHOD_ALLOWLIST = frozenset({
+    # misc.py registers top-level functions; AST sees them, but the
+    # package alias 'misc' is a flat-module case we whitelist for clarity.
+    ('misc', 'get_app_settings', None),
+    ('misc', 'set_app_settings', None),
+    ('misc', 'empty_rpc_call', None),
+    # Timer plugins register start/cancel/get_state via Timer subclass
+    # instances in timers/__init__.py — not discoverable via @plugs.tag
+    # because the methods live on the Timer base class.
+    ('timers', 'timer_shutdown', 'start'),
+    ('timers', 'timer_shutdown', 'cancel'),
+    ('timers', 'timer_shutdown', 'get_state'),
+    ('timers', 'timer_fade_volume', 'start'),
+    ('timers', 'timer_fade_volume', 'cancel'),
+    ('timers', 'timer_fade_volume', 'get_state'),
+    ('timers', 'timer_stop_player', 'start'),
+    ('timers', 'timer_stop_player', 'cancel'),
+    ('timers', 'timer_stop_player', 'get_state'),
+    ('timers', 'timer_idle_shutdown', 'start'),
+    ('timers', 'timer_idle_shutdown', 'cancel'),
+    ('timers', 'timer_idle_shutdown', 'get_state'),
+})
+
+
+# Backend-only RPCs the generator MUST NOT emit to the JS commands file.
+# See project_phase_3b_followups.md #2 for the rationale behind
+# ``playermpd.ctrl.play_single_passive`` (it bypasses coordinator
+# activation; only ``playerpodcast`` is allowed to call it).
+KNOWN_INTERNAL_PLUGIN_METHODS = frozenset({
+    ('player', 'ctrl', 'play_single_passive'),
+})
 
 # TODO: Transfer RFID command from v2.3...
 

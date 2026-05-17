@@ -29,11 +29,15 @@ const CardsOverview = () => {
   useEffect(() => {
     const loadCardList = async () => {
       setIsLoading(true);
-      const { result, error } = await request('cardsList');
+      // Phase 5a FU#1: surface fetch errors inline (cards list is the
+      // primary view; throwing to the boundary would unmount it).
+      try {
+        const { result } = await request('cardsList');
+        if(result) setData(result);
+      } catch (err) {
+        setError(err);
+      }
       setIsLoading(false);
-
-      if(result) setData(result);
-      if(error) setError(error);
     }
 
     loadCardList();
