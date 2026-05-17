@@ -249,9 +249,10 @@ def scenario_mpd_swipes() -> None:
     #     exactly what Phase 3a deleted.
     #
     # Production coverage for the init-time clear lives in
-    # ``test/components/playermpd/test_playermpd_play_card.py``
-    # (which DOES instantiate PlayerMPD with fakes via the conftest
-    # ``player_mpd`` fixture). When Phase Item 3 (plug-time-coupling
+    # ``test/components/playermpd/test_playermpd_second_swipe.py``
+    # (specifically ``test_scenario_3_first_swipe_after_reboot_plays_not_pauses``,
+    # which exercises ``clear_last_swiped_folder`` over a realistic
+    # state-store snapshot). When Phase Item 3 (plug-time-coupling
     # refactor) lands and makes PlayerMPD safer to construct in
     # isolation, revisit this scenario and exercise __init__ directly.
     store.set_last_played_folder('audiofolders/Album-A')
