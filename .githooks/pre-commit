@@ -4,35 +4,80 @@
 #
 # TO ACTIVATE: cp .githooks/pre-commit .git/hooks/.
 #
-# Checks
-# - flake8 on staged python files
-#   Note: This only checks the modified files
-# - docs build of if any python file is staged
-#   Note: This builds the entire documentation if a changed file goes into the documentation
-# - Markdownlint if any markdown file is staged
-#   Note: This checks all markdown files as configured in .markdownlint-cli2.yaml
-
+# Checks (Phase 7: run flake8 and markdownlint in parallel)
+# - flake8 on staged python files (only changed files)
+# - markdownlint-cli2 on all markdown files
+# - docs build if any python file is staged
 #
-# If there are problem with this script, commit may still be done with
+# Parallelization: flake8 and markdownlint don't share state and have
+# disjoint inputs, so we run them concurrently and join. Docs gen
+# stays sequential because it depends on the python files settling.
+#
+# If there are problems with this script, commit may still be done with
 # git commit --no-verify
 
-
-# Pass all staged python files through flake8
+# Gather staged file lists once.
 PY_FILES="$(git diff --diff-filter=d --staged --name-only -- **/*.py)"
-flake8_code=0
-if [[ -n $PY_FILES ]]; then
-  echo -e "\n**************************************************************"
-  echo "Modified Python source files. Running flake8 ... "
-  echo -e "**************************************************************\n"
-  ./run_flake8.sh $PY_FILES
-  flake8_code=$?
-  echo "Flake8 return code: $flake8_code"
-fi
+MD_FILES="$(git diff --diff-filter=d --staged --name-only -- **/*.md)"
 
-code=$(( flake8_code ))
+# tmp dir for parallel-job output (so streams don't interleave).
+TMPDIR_PRECOMMIT="$(mktemp -d -t phoniebox-precommit.XXXXXX)"
+trap 'rm -rf "$TMPDIR_PRECOMMIT"' EXIT
 
+run_flake8() {
+    if [[ -z "$PY_FILES" ]]; then
+        echo 0 > "$TMPDIR_PRECOMMIT/flake8.rc"
+        return 0
+    fi
+    {
+        echo -e "\n**************************************************************"
+        echo "Modified Python source files. Running flake8 ... "
+        echo -e "**************************************************************\n"
+        ./run_flake8.sh $PY_FILES
+        rc=$?
+        echo "Flake8 return code: $rc"
+        echo "$rc" > "$TMPDIR_PRECOMMIT/flake8.rc"
+    } > "$TMPDIR_PRECOMMIT/flake8.out" 2>&1
+}
+
+run_markdownlint() {
+    if [[ -z "$MD_FILES" ]]; then
+        echo 0 > "$TMPDIR_PRECOMMIT/markdownlint.rc"
+        return 0
+    fi
+    {
+        echo -e "\n**************************************************************"
+        echo "Modified Markdown files. Running markdownlint-cli2 ... "
+        echo -e "**************************************************************\n"
+        ./run_markdownlint.sh
+        rc=$?
+        echo "Markdownlint-cli2 return code: $rc"
+        echo "$rc" > "$TMPDIR_PRECOMMIT/markdownlint.rc"
+    } > "$TMPDIR_PRECOMMIT/markdownlint.out" 2>&1
+}
+
+# Fan out: flake8 and markdownlint run concurrently.
+run_flake8 &
+PID_FLAKE8=$!
+run_markdownlint &
+PID_MD=$!
+
+wait "$PID_FLAKE8" 2>/dev/null
+wait "$PID_MD" 2>/dev/null
+
+# Stream outputs in a stable order (flake8 first, then markdown) so
+# the user sees a coherent log even though jobs ran in parallel.
+cat "$TMPDIR_PRECOMMIT/flake8.out" 2>/dev/null
+cat "$TMPDIR_PRECOMMIT/markdownlint.out" 2>/dev/null
+
+flake8_code=$(cat "$TMPDIR_PRECOMMIT/flake8.rc" 2>/dev/null || echo 0)
+markdownlint_code=$(cat "$TMPDIR_PRECOMMIT/markdownlint.rc" 2>/dev/null || echo 0)
+
+# Docs generation runs sequentially after flake8 because both touch
+# the python files; running concurrently risked tooling thrash and
+# the speed gain was negligible.
 doc_code=0
-if [[ -n $PY_FILES ]]; then
+if [[ -n "$PY_FILES" ]]; then
   echo -e "\n**************************************************************"
   echo -e "Modified Python source files. Generation markdown docs from docstring ... \n"
   echo -e "**************************************************************\n"
@@ -41,27 +86,12 @@ if [[ -n $PY_FILES ]]; then
   echo "pydoc_markdown return code: $doc_code"
 fi
 
-code=$(( flake8_code + doc_code ))
+code=$(( flake8_code + doc_code + markdownlint_code ))
 
-# Pass all staged markdown files through markdownlint-cli2
-MD_FILES="$(git diff --diff-filter=d --staged --name-only -- **/*.md)"
-markdownlint_code=0
-if [[ -n $MD_FILES ]]; then
-  echo -e "\n**************************************************************"
-  echo "Modified Markdown files. Running markdownlint-cli2 ... "
-  echo -e "**************************************************************\n"
-  ./run_markdownlint.sh
-  markdownlint_code=$?
-  echo "Markdownlint-cli2 return code: $markdownlint_code"
-fi
-
-code=$(( flake8_code + doc_code + markdownlint_code))
-
-if [[ code -gt 0 ]]; then
+if [[ $code -gt 0 ]]; then
   echo -e "\n**************************************************************"
   echo -e "ERROR(s) during pre-commit checks. Aborting commit!"
   echo -e "**************************************************************\n"
 fi
 
 exit $code
-

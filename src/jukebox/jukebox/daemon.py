@@ -164,6 +164,64 @@ class JukeBox:
                     f"Starting in degraded mode."
                 )
 
+    def _summary_active_player(self):
+        try:
+            from components.player.coordinator import get_coordinator
+            return str(get_coordinator().current())
+        except Exception as exc:
+            return f"<unavailable> ({exc!s})"
+
+    def _summary_loaded_plugins(self):
+        try:
+            pack_ok = plugin.call_ignore_errors('misc', 'get_all_loaded_packages') or ()
+            return f"{len(pack_ok)} = {', '.join(sorted(pack_ok))}"
+        except Exception as exc:
+            return f"<unavailable> ({exc!s})"
+
+    def _summary_rfid_readers(self):
+        try:
+            cfg_rfid = jukebox.cfghandler.get_handler('rfid')
+            readers_cfg = cfg_rfid.getn('rfid', 'readers', default={})
+        except Exception as exc:
+            return f"<unavailable> ({exc!s})"
+
+        if not isinstance(readers_cfg, dict):
+            return "<none configured>"
+        modules = [
+            str(body['module'])
+            for body in readers_cfg.values()
+            if isinstance(body, dict) and 'module' in body
+        ]
+        return ', '.join(modules) if modules else "<none configured>"
+
+    def _summary_audio_sink(self):
+        try:
+            current_sink = plugin.call_ignore_errors('volume', 'ctrl', 'get_active')
+            return str(current_sink) if current_sink else "<unknown>"
+        except Exception as exc:
+            return f"<unavailable> ({exc!s})"
+
+    def _log_startup_summary(self):
+        """Emit an INFO-level startup banner with the key runtime facts.
+
+        Phase 7. Each lookup is wrapped in a per-field helper that
+        catches its own exceptions so a partially-failed startup still
+        prints whatever did come up.
+
+        Fields surfaced (all at INFO so journalctl shows them):
+
+        * **active player** — the PlayerCoordinator's current backend.
+        * **loaded plugins** — sorted alias list (mirrors the
+          ``Loaded plugins`` line above but as a single grep-friendly
+          summary block).
+        * **RFID reader(s)** — module names from rfid.yaml.
+        * **audio sink** — current PulseAudio sink alias.
+        """
+        logger.info(f"Startup summary: active player = {self._summary_active_player()}")
+        logger.info(f"Startup summary: loaded plugins ({self._summary_loaded_plugins()})")
+        logger.info(f"Startup summary: RFID reader(s) = {self._summary_rfid_readers()}")
+        logger.info(f"Startup summary: audio sink = {self._summary_audio_sink()}")
+
     def run(self):
         time_start = time.time_ns()
 
@@ -185,6 +243,14 @@ class JukeBox:
         publishing.get_publisher().send('core.plugins.error', pack_error)
         publishing.get_publisher().send('core.started_at', time.ctime(self._start_time))
         publishing.get_publisher().send('core.git_state', self._git_state)
+
+        # Phase 7: startup summary at INFO so journalctl users can tell
+        # at a glance which player is active, which RFID reader was
+        # selected, and which audio sink the volume plugin chose. Each
+        # lookup is best-effort — a plugin that failed to load (and
+        # therefore appears in pack_error above) must not turn the
+        # summary into a hard error.
+        self._log_startup_summary()
 
         # Validate critical plugins (Phase 1, fix #6). ``load_all_named``
         # runs with ``ignore_errors=True`` so the daemon happily boots
