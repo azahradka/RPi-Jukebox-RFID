@@ -259,8 +259,15 @@ cd src/webapp && npm test
 ```bash
 # RPC command-line tool (interactive mode with autocomplete)
 ./tools/run_rpc_tool.sh
-# Direct command execution:
+# Direct command execution (one-shot mode):
 ./tools/run_rpc_tool.sh -c host.shutdown
+# Pass positional args (JSON list, shape matches cards.yaml ``args:``):
+./tools/run_rpc_tool.sh -c player.ctrl.play_folder --args '["FolderName"]'
+# Pass keyword args (JSON object, shape matches cards.yaml ``kwargs:``):
+./tools/run_rpc_tool.sh -c player.ctrl.play_folder \
+    --args '["FolderName"]' --kwargs '{"recursive": true}'
+# Malformed JSON or wrong shape (e.g. --kwargs '[]') is rejected with a
+# clear error naming the offending flag.
 
 # Monitor publishing messages (debugging)
 ./tools/run_publicity_sniffer.sh
